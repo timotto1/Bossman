@@ -2,13 +2,9 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import {
-    MagnifyingGlassIcon,
-    FunnelIcon,
-    ArrowDownTrayIcon,
-    ArrowsPointingOutIcon,
-    ChevronDownIcon,
-} from "@heroicons/react/24/outline";
+import { ChevronDownIcon } from "@heroicons/react/24/outline";
+import { OlympusTable, OlympusColumnDef } from "@/components/ui/olympus-table";
+import { UI } from "@/lib/ui";
 
 type Resident = {
     id: string;
@@ -27,7 +23,7 @@ type Resident = {
 
 type Company = { id: string; name: string };
 
-const PAGE_SIZE = 15;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const HA_COLORS = [
     "bg-gray-100 text-gray-700 dark:bg-white/10 dark:text-gray-300",
@@ -76,12 +72,125 @@ function formatShare(val: number | null) {
     return `${val}%`;
 }
 
+// ─── Column definitions (outside component for stable reference) ──────────────
+
+const COLUMNS: OlympusColumnDef<Resident>[] = [
+    {
+        key: "name",
+        label: "Name",
+        sortable: true,
+        filterable: true,
+        filterType: "text",
+        render: (val) => (
+            <span className="font-medium text-[#26045D] dark:text-purple-300 whitespace-nowrap">
+                {String(val ?? "—")}
+            </span>
+        ),
+    },
+    {
+        key: "address",
+        label: "Address",
+        filterable: true,
+        filterType: "text",
+        cellClassName: "max-w-[130px] truncate text-gray-500 dark:text-gray-400",
+        render: (val) => (val ?? "—") as string,
+    },
+    {
+        key: "email",
+        label: "Email",
+        filterable: true,
+        filterType: "text",
+        cellClassName: "max-w-[130px] truncate text-gray-500 dark:text-gray-400",
+        render: (val) => (val ?? "—") as string,
+    },
+    {
+        key: "housing_association",
+        label: "Housing",
+        filterable: true,
+        filterType: "select",
+        // filterOptions populated dynamically — see page component
+        render: (val) => {
+            if (!val) return <span className="text-gray-400">—</span>;
+            const name = String(val);
+            const color = getHAColor(name);
+            return (
+                <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium max-w-[110px] truncate ${color}`}>
+                    {name}
+                </span>
+            );
+        },
+    },
+    {
+        key: "salary",
+        label: "Salary",
+        sortable: true,
+        filterable: true,
+        filterType: "number",
+        render: (val) => formatCurrency(val as number | null),
+    },
+    {
+        key: "savings",
+        label: "Savings",
+        sortable: true,
+        filterable: true,
+        filterType: "number",
+        render: (val) => formatCurrency(val as number | null),
+    },
+    {
+        key: "current_share",
+        label: "Current %",
+        sortable: true,
+        filterable: true,
+        filterType: "number",
+        render: (val) => formatShare(val as number | null),
+    },
+    {
+        key: "maximum_share",
+        label: "Max %",
+        sortable: true,
+        filterable: true,
+        filterType: "number",
+        render: (val) => {
+            const share = val as number | null;
+            if (share === null || share === undefined)
+                return <span className="text-gray-400 dark:text-gray-600">—</span>;
+            const s = getShareBadgeStyle(share);
+            return (
+                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${s.bg} ${s.text}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${s.dot}`} />
+                    {share}%
+                </span>
+            );
+        },
+    },
+    {
+        key: "signed_up_date",
+        label: "Signed",
+        sortable: true,
+        filterable: true,
+        filterType: "date",
+        render: (val) => (
+            <span className="text-gray-500 dark:text-gray-400">{formatDate(val as string | null)}</span>
+        ),
+    },
+    {
+        key: "updated_at",
+        label: "Last updated",
+        sortable: true,
+        filterable: true,
+        filterType: "date",
+        render: (val) => (
+            <span className="text-gray-500 dark:text-gray-400">{formatDate(val as string | null)}</span>
+        ),
+    },
+];
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 export default function ResidentsPage() {
     const [residents, setResidents] = useState<Resident[]>([]);
     const [companies, setCompanies] = useState<Company[]>([]);
     const [selectedCompany, setSelectedCompany] = useState<string>("all");
-    const [search, setSearch] = useState("");
-    const [page, setPage] = useState(1);
     const [loading, setLoading] = useState(true);
     const router = useRouter();
 
@@ -103,206 +212,54 @@ export default function ResidentsPage() {
             .finally(() => setLoading(false));
     }, [selectedCompany]);
 
-    const filtered = useMemo(() => {
-        const q = search.toLowerCase().trim();
-        if (!q) return residents;
-        return residents.filter(
-            (r) =>
-                r.name.toLowerCase().includes(q) ||
-                (r.email?.toLowerCase().includes(q) ?? false)
+    // Build dynamic filterOptions for the housing_association column
+    const columns = useMemo<OlympusColumnDef<Resident>[]>(() => {
+        const haNames = Array.from(
+            new Set(residents.map((r) => r.housing_association).filter(Boolean) as string[])
+        ).sort();
+        return COLUMNS.map((col) =>
+            col.key === "housing_association"
+                ? { ...col, filterOptions: haNames.map((n) => ({ value: n, label: n })) }
+                : col
         );
-    }, [residents, search]);
+    }, [residents]);
 
-    const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-    const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
-    useEffect(() => setPage(1), [search, selectedCompany]);
+    // HA company dropdown for extraToolbar slot
+    const haDropdown = (
+        <div className="relative">
+            <select
+                value={selectedCompany}
+                onChange={(e) => setSelectedCompany(e.target.value)}
+                className="appearance-none text-sm border border-gray-200 dark:border-white/10 rounded-lg pl-3 pr-8 py-2 bg-white dark:bg-white/10 text-gray-700 dark:text-gray-200 outline-none cursor-pointer"
+            >
+                <option value="all">All Housing Associations</option>
+                {companies.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+            </select>
+            <ChevronDownIcon className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500 dark:text-gray-400 pointer-events-none" />
+        </div>
+    );
 
     return (
-        <div className="flex flex-col h-screen bg-white dark:bg-[#0E0823]">
-            {/* Top filter bar */}
-            <div className="flex items-center gap-3 px-6 py-3 border-b border-gray-100 dark:border-white/10 bg-white dark:bg-[#160B30]">
-                <div className="flex items-center gap-2 flex-1 max-w-sm bg-gray-50 dark:bg-white/10 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2">
-                    <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
-                    <input
-                        type="text"
-                        placeholder="Search by name or email..."
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        className="bg-transparent text-sm text-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-600 outline-none w-full"
-                    />
-                </div>
-                <div className="relative">
-                    <select
-                        value={selectedCompany}
-                        onChange={(e) => setSelectedCompany(e.target.value)}
-                        className="appearance-none text-sm border border-gray-200 dark:border-white/10 rounded-lg pl-3 pr-8 py-2 bg-white dark:bg-white/10 text-gray-700 dark:text-gray-200 outline-none cursor-pointer"
-                    >
-                        <option value="all">All Housing Associations</option>
-                        {companies.map((c) => (
-                            <option key={c.id} value={c.id}>
-                                {c.name}
-                            </option>
-                        ))}
-                    </select>
-                    <ChevronDownIcon className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500 dark:text-gray-400 pointer-events-none" />
-                </div>
+        <div className={UI.page}>
+            {/* Page heading */}
+            <div className="flex items-center gap-3 px-6 pt-5 pb-1">
+                <h1 className={UI.sectionHeading}>All residents</h1>
+                <span className={UI.countBadge}>{residents.length.toLocaleString()} sign ups</span>
             </div>
 
-            {/* Main content */}
-            <div className="flex-1 overflow-auto px-6 py-5">
-                <div className="flex items-center justify-between mb-5">
-                    <div className="flex items-center gap-3">
-                        <h1 className="text-xl font-bold text-gray-900 dark:text-white">
-                            All residents
-                        </h1>
-                        <span className="text-sm font-medium text-[#7B3FE4] bg-[#F4F0FE] dark:bg-purple-900/40 dark:text-purple-300 px-2.5 py-0.5 rounded-full">
-                            {filtered.length.toLocaleString()} sign ups
-                        </span>
-                    </div>
-                    <div className="flex items-center gap-1 text-gray-400 dark:text-gray-600">
-                        <button className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/10 rounded-md transition-colors">
-                            <MagnifyingGlassIcon className="w-4 h-4" />
-                        </button>
-                        <button className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/10 rounded-md transition-colors">
-                            <FunnelIcon className="w-4 h-4" />
-                        </button>
-                        <button className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/10 rounded-md transition-colors">
-                            <ArrowDownTrayIcon className="w-4 h-4" />
-                        </button>
-                        <button className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/10 rounded-md transition-colors">
-                            <ArrowsPointingOutIcon className="w-4 h-4" />
-                        </button>
-                    </div>
-                </div>
-
-                {/* Table */}
-                <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                        <thead>
-                            <tr className="border-b border-gray-100 dark:border-white/10">
-                                <th className="w-10 pb-3 text-left">
-                                    <input type="checkbox" className="rounded border-gray-300 dark:border-white/20" />
-                                </th>
-                                {["Name","Address","Email","Housing","Salary","Savings","Current %","Max %","Signed","Last updated"].map((col) => (
-                                    <th key={col} className="pb-3 text-left text-xs font-medium text-gray-500 dark:text-gray-500 whitespace-nowrap pr-6">
-                                        {col}
-                                    </th>
-                                ))}
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-50 dark:divide-white/5">
-                            {loading ? (
-                                <tr>
-                                    <td colSpan={11} className="py-16 text-center text-gray-400 dark:text-gray-600">
-                                        Loading residents…
-                                    </td>
-                                </tr>
-                            ) : paged.length === 0 ? (
-                                <tr>
-                                    <td colSpan={11} className="py-16 text-center text-gray-400 dark:text-gray-600">
-                                        No residents found
-                                    </td>
-                                </tr>
-                            ) : (
-                                paged.map((r) => {
-                                    const maxStyle = getShareBadgeStyle(r.maximum_share);
-                                    const haColor = r.housing_association
-                                        ? getHAColor(r.housing_association)
-                                        : "bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-400";
-                                    return (
-                                        <tr
-                                            key={r.id}
-                                            className="hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer"
-                                            onClick={() => router.push(`/dashboard/residents/${r.id}`)}
-                                        >
-                                            <td className="py-3 pr-2">
-                                                <input type="checkbox" className="rounded border-gray-300 dark:border-white/20" onClick={(e) => e.stopPropagation()} />
-                                            </td>
-                                            <td className="py-3 pr-6 font-medium text-[#26045D] dark:text-purple-300 whitespace-nowrap">
-                                                {r.name}
-                                            </td>
-                                            <td className="py-3 pr-6 text-gray-500 dark:text-gray-400 whitespace-nowrap max-w-[130px] truncate">
-                                                {r.address ?? "—"}
-                                            </td>
-                                            <td className="py-3 pr-6 text-gray-500 dark:text-gray-400 whitespace-nowrap max-w-[130px] truncate">
-                                                {r.email ?? "—"}
-                                            </td>
-                                            <td className="py-3 pr-6">
-                                                {r.housing_association ? (
-                                                    <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium max-w-[110px] truncate ${haColor}`}>
-                                                        {r.housing_association}
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-gray-400">—</span>
-                                                )}
-                                            </td>
-                                            <td className="py-3 pr-6 text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                                                {formatCurrency(r.salary)}
-                                            </td>
-                                            <td className="py-3 pr-6 text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                                                {formatCurrency(r.savings)}
-                                            </td>
-                                            <td className="py-3 pr-6 text-gray-700 dark:text-gray-300">
-                                                {formatShare(r.current_share)}
-                                            </td>
-                                            <td className="py-3 pr-6">
-                                                {r.maximum_share !== null ? (
-                                                    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${maxStyle.bg} ${maxStyle.text}`}>
-                                                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${maxStyle.dot}`} />
-                                                        {r.maximum_share}%
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-gray-400 dark:text-gray-600">—</span>
-                                                )}
-                                            </td>
-                                            <td className="py-3 pr-6 text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                                                {formatDate(r.signed_up_date)}
-                                            </td>
-                                            <td className="py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                                                {formatDate(r.updated_at)}
-                                            </td>
-                                        </tr>
-                                    );
-                                })
-                            )}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            {/* Pagination */}
-            <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 dark:border-white/10 bg-white dark:bg-[#160B30]">
-                <button
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={page === 1}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-white/10 rounded-lg disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
-                >
-                    ← Previous
-                </button>
-                <div className="flex items-center gap-1">
-                    {Array.from({ length: Math.min(totalPages, 6) }, (_, i) => i + 1).map((n) => (
-                        <button
-                            key={n}
-                            onClick={() => setPage(n)}
-                            className={`w-8 h-8 text-sm rounded-lg font-medium transition-colors ${
-                                page === n
-                                    ? "bg-[#26045D] dark:bg-purple-600 text-white"
-                                    : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10"
-                            }`}
-                        >
-                            {n}
-                        </button>
-                    ))}
-                </div>
-                <button
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    disabled={page === totalPages}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-white/10 rounded-lg disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
-                >
-                    Next →
-                </button>
-            </div>
+            <OlympusTable<Resident>
+                columns={columns}
+                data={residents}
+                loading={loading}
+                rowKey={(r) => r.id}
+                searchKeys={["name", "email"]}
+                searchPlaceholder="Search by name or email…"
+                extraToolbar={haDropdown}
+                onRowClick={(r) => router.push(`/dashboard/residents/${r.id}`)}
+                pageSize={15}
+            />
         </div>
     );
 }
