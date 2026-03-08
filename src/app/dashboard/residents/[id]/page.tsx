@@ -889,6 +889,7 @@ export default function ResidentDetailPage() {
     const [submittingReply, setSubmittingReply] = useState(false);
     const [expandedReplies, setExpandedReplies] = useState<string[]>([]);
     const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+    const [noteSubmitError, setNoteSubmitError] = useState<string | null>(null);
 
     // Activity tab state
     const [activity, setActivity] = useState<ActivityEvent[]>([]);
@@ -1062,6 +1063,7 @@ export default function ResidentDetailPage() {
     async function handleSubmitNote() {
         if (!noteBody.trim()) return;
         setSubmittingNote(true);
+        setNoteSubmitError(null);
         try {
             await submitNote(noteBody.trim(), null, noteFile);
             setNoteBody("");
@@ -1069,7 +1071,7 @@ export default function ResidentDetailPage() {
             setNotesFetched(false);
             await fetchNotes();
         } catch (err) {
-            console.error(err);
+            setNoteSubmitError((err as Error).message);
         } finally {
             setSubmittingNote(false);
         }
@@ -1078,6 +1080,7 @@ export default function ResidentDetailPage() {
     async function handleSubmitReply() {
         if (!replyBody.trim() || !replyingTo) return;
         setSubmittingReply(true);
+        setNoteSubmitError(null);
         try {
             await submitNote(replyBody.trim(), replyingTo);
             setReplyBody("");
@@ -1088,7 +1091,7 @@ export default function ResidentDetailPage() {
             setNotesFetched(false);
             await fetchNotes();
         } catch (err) {
-            console.error(err);
+            setNoteSubmitError((err as Error).message);
         } finally {
             setSubmittingReply(false);
         }
@@ -2001,6 +2004,11 @@ export default function ResidentDetailPage() {
                                             </button>
                                         </span>
                                     </div>
+                                )}
+                                {noteSubmitError && (
+                                    <p className="mt-2 text-xs text-red-500 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded-lg">
+                                        {noteSubmitError}
+                                    </p>
                                 )}
                                 <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-gray-100 dark:border-white/[0.06]">
                                     <label
