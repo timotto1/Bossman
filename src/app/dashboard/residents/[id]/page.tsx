@@ -21,6 +21,13 @@ import {
     ClipboardDocumentListIcon,
     SparklesIcon,
     ChatBubbleLeftRightIcon,
+    PaperClipIcon,
+    HandThumbUpIcon,
+    HandThumbDownIcon,
+    ChatBubbleOvalLeftIcon,
+    MapPinIcon,
+    TrashIcon,
+    ArrowUturnLeftIcon,
 } from "@heroicons/react/24/outline";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { createClient } from "@/utils/supabase/client";
@@ -381,6 +388,386 @@ function formatSize(bytes: number | null): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// ── Notes helpers ─────────────────────────────────────────────────────────────
+
+type NoteReactions = {
+    up: number;
+    down: number;
+    user_reaction: "up" | "down" | null;
+};
+
+type ResidentNote = {
+    id: string;
+    parent_id: string | null;
+    author_id: string;
+    author_name: string;
+    body: string;
+    attachment_path: string | null;
+    attachment_name: string | null;
+    attachment_url: string | null;
+    is_pinned: boolean;
+    created_at: string;
+    reactions: NoteReactions;
+    replies: ResidentNote[];
+};
+
+function getNoteInitials(name: string): string {
+    const parts = name.trim().split(/\s+/);
+    return parts.length >= 2
+        ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+        : name.slice(0, 2).toUpperCase();
+}
+
+const NOTE_GRADIENTS = [
+    "from-[#7B3FE4] to-[#26045D]",
+    "from-blue-500 to-blue-800",
+    "from-emerald-500 to-emerald-800",
+    "from-amber-500 to-amber-700",
+    "from-rose-500 to-rose-700",
+    "from-teal-500 to-teal-700",
+];
+
+function getNoteGradient(name: string): string {
+    let hash = 0;
+    for (const c of name) hash = (hash * 31 + c.charCodeAt(0)) % NOTE_GRADIENTS.length;
+    return NOTE_GRADIENTS[Math.abs(hash)];
+}
+
+function fmtRelativeTime(iso: string): string {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 7) return `${days}d ago`;
+    return fmtDate(iso);
+}
+
+function updateNoteReaction(note: ResidentNote, reaction: "up" | "down"): ResidentNote {
+    const { user_reaction, up, down } = note.reactions;
+    if (user_reaction === reaction) {
+        return {
+            ...note,
+            reactions: {
+                user_reaction: null,
+                up: reaction === "up" ? Math.max(0, up - 1) : up,
+                down: reaction === "down" ? Math.max(0, down - 1) : down,
+            },
+        };
+    }
+    return {
+        ...note,
+        reactions: {
+            user_reaction: reaction,
+            up: reaction === "up" ? up + 1 : user_reaction === "up" ? Math.max(0, up - 1) : up,
+            down: reaction === "down" ? down + 1 : user_reaction === "down" ? Math.max(0, down - 1) : down,
+        },
+    };
+}
+
+type NoteCardActions = {
+    onReaction: (noteId: string, r: "up" | "down") => void;
+    onPin: (noteId: string, pinned: boolean) => void;
+    onDelete: (noteId: string, parentId: string | null) => void;
+    onReplyStart: (noteId: string) => void;
+    onReplyBodyChange: (body: string) => void;
+    onReplySubmit: () => void;
+    onReplyCancel: () => void;
+    onToggleReplies: (noteId: string) => void;
+};
+
+function NoteCard({
+    note,
+    isReply = false,
+    currentUserId,
+    replyingTo,
+    replyBody,
+    submittingReply,
+    expandedReplies,
+    actions,
+}: {
+    note: ResidentNote;
+    isReply?: boolean;
+    currentUserId: string | null;
+    replyingTo: string | null;
+    replyBody: string;
+    submittingReply: boolean;
+    expandedReplies: string[];
+    actions: NoteCardActions;
+}) {
+    const initials = getNoteInitials(note.author_name);
+    const gradient = getNoteGradient(note.author_name);
+    const isAuthor = !!currentUserId && currentUserId === note.author_id;
+    const isActiveReply = replyingTo === note.id;
+    const repliesExpanded = expandedReplies.includes(note.id);
+
+    return (
+        <div
+            className={[
+                "rounded-2xl border bg-white dark:bg-[#1A0F35] overflow-hidden transition-all duration-200",
+                "hover:shadow-[0_4px_16px_-4px_rgba(0,0,0,0.08)] dark:hover:shadow-[0_4px_24px_-4px_rgba(0,0,0,0.4)]",
+                note.is_pinned
+                    ? "border-amber-200 dark:border-amber-500/30"
+                    : "border-gray-100 dark:border-white/[0.08]",
+            ].join(" ")}
+        >
+            {/* Pinned banner */}
+            {note.is_pinned && (
+                <div className="flex items-center gap-1.5 px-4 py-1.5 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-100 dark:border-amber-500/20">
+                    <MapPinIcon className="w-3 h-3 text-amber-500 rotate-45" />
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                        Pinned
+                    </span>
+                </div>
+            )}
+
+            <div className="p-4">
+                {/* Header row */}
+                <div className="flex items-start justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                        <div
+                            className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${gradient}`}
+                        >
+                            <span className="text-xs font-semibold text-white leading-none">{initials}</span>
+                        </div>
+                        <div className="min-w-0">
+                            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">
+                                {note.author_name}
+                            </p>
+                            <p className="text-xs text-gray-400 dark:text-gray-600 leading-tight mt-0.5">
+                                {fmtRelativeTime(note.created_at)}
+                            </p>
+                        </div>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-0.5 flex-shrink-0">
+                        {!isReply && (
+                            <button
+                                onClick={() => actions.onPin(note.id, note.is_pinned)}
+                                title={note.is_pinned ? "Unpin" : "Pin"}
+                                className={[
+                                    "w-7 h-7 rounded-lg flex items-center justify-center transition-colors",
+                                    note.is_pinned
+                                        ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20"
+                                        : "text-gray-300 dark:text-gray-700 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20",
+                                ].join(" ")}
+                            >
+                                <MapPinIcon className="w-3.5 h-3.5 rotate-45" />
+                            </button>
+                        )}
+                        {isAuthor && (
+                            <button
+                                onClick={() => actions.onDelete(note.id, note.parent_id)}
+                                title="Delete"
+                                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-300 dark:text-gray-700 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                            >
+                                <TrashIcon className="w-3.5 h-3.5" />
+                            </button>
+                        )}
+                    </div>
+                </div>
+
+                {/* Note body */}
+                <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed">
+                    {note.body}
+                </p>
+
+                {/* Attachment */}
+                {note.attachment_url && note.attachment_name && (
+                    <a
+                        href={note.attachment_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        download={note.attachment_name}
+                        className="inline-flex items-center gap-1.5 mt-3 text-xs text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/30 px-2.5 py-1.5 rounded-lg transition-colors"
+                    >
+                        <PaperClipIcon className="w-3.5 h-3.5" />
+                        {note.attachment_name}
+                    </a>
+                )}
+
+                {/* Action bar */}
+                <div className="flex items-center gap-1 mt-3 pt-3 border-t border-gray-100 dark:border-white/[0.06]">
+                    {/* Thumbs up */}
+                    <button
+                        onClick={() => actions.onReaction(note.id, "up")}
+                        className={[
+                            "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg transition-colors",
+                            note.reactions.user_reaction === "up"
+                                ? "bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400"
+                                : "text-gray-400 dark:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/[0.06]",
+                        ].join(" ")}
+                    >
+                        <HandThumbUpIcon className="w-3.5 h-3.5" />
+                        {note.reactions.up > 0 && <span className="tabular-nums">{note.reactions.up}</span>}
+                    </button>
+
+                    {/* Thumbs down */}
+                    <button
+                        onClick={() => actions.onReaction(note.id, "down")}
+                        className={[
+                            "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg transition-colors",
+                            note.reactions.user_reaction === "down"
+                                ? "bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400"
+                                : "text-gray-400 dark:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/[0.06]",
+                        ].join(" ")}
+                    >
+                        <HandThumbDownIcon className="w-3.5 h-3.5" />
+                        {note.reactions.down > 0 && <span className="tabular-nums">{note.reactions.down}</span>}
+                    </button>
+
+                    <div className="flex-1" />
+
+                    {/* Replies toggle */}
+                    {!isReply && note.replies.length > 0 && (
+                        <button
+                            onClick={() => actions.onToggleReplies(note.id)}
+                            className="inline-flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-600 hover:text-gray-600 dark:hover:text-gray-400 transition-colors px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/[0.06]"
+                        >
+                            <ChatBubbleOvalLeftIcon className="w-3.5 h-3.5" />
+                            {note.replies.length} {note.replies.length === 1 ? "reply" : "replies"}
+                        </button>
+                    )}
+
+                    {/* Reply button */}
+                    {!isReply && (
+                        <button
+                            onClick={() =>
+                                isActiveReply ? actions.onReplyCancel() : actions.onReplyStart(note.id)
+                            }
+                            className={[
+                                "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg transition-colors",
+                                isActiveReply
+                                    ? "text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20"
+                                    : "text-gray-400 dark:text-gray-600 hover:text-purple-600 dark:hover:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20",
+                            ].join(" ")}
+                        >
+                            <ArrowUturnLeftIcon className="w-3.5 h-3.5" />
+                            Reply
+                        </button>
+                    )}
+                </div>
+            </div>
+
+            {/* Inline reply composer */}
+            {isActiveReply && !isReply && (
+                <div className="border-t border-gray-100 dark:border-white/[0.06] p-4 bg-gray-50/50 dark:bg-white/[0.02]">
+                    <textarea
+                        value={replyBody}
+                        onChange={(e) => actions.onReplyBodyChange(e.target.value)}
+                        placeholder="Write a reply…"
+                        rows={2}
+                        autoFocus
+                        className="w-full text-sm text-gray-900 dark:text-gray-100 bg-transparent resize-none outline-none placeholder:text-gray-400 dark:placeholder:text-gray-600"
+                    />
+                    <div className="flex items-center justify-end gap-2 mt-2">
+                        <button
+                            onClick={actions.onReplyCancel}
+                            className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors px-2 py-1"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            onClick={actions.onReplySubmit}
+                            disabled={!replyBody.trim() || submittingReply}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-[#7B3FE4] hover:bg-[#6D28D9] text-white rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                            {submittingReply ? "Posting…" : "Post reply"}
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Expanded replies */}
+            {!isReply && repliesExpanded && note.replies.length > 0 && (
+                <div className="border-t border-gray-100 dark:border-white/[0.06] divide-y divide-gray-100 dark:divide-white/[0.06] bg-gray-50/30 dark:bg-white/[0.01]">
+                    {note.replies.map((reply) => (
+                        <div key={reply.id} className="px-4 py-3 pl-14">
+                            {/* Reply header */}
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                                <div className="flex items-center gap-2">
+                                    <div
+                                        className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${getNoteGradient(reply.author_name)}`}
+                                    >
+                                        <span className="text-[10px] font-semibold text-white leading-none">
+                                            {getNoteInitials(reply.author_name)}
+                                        </span>
+                                    </div>
+                                    <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">
+                                        {reply.author_name}
+                                    </span>
+                                    <span className="text-xs text-gray-400 dark:text-gray-600">
+                                        {fmtRelativeTime(reply.created_at)}
+                                    </span>
+                                </div>
+                                {!!currentUserId && currentUserId === reply.author_id && (
+                                    <button
+                                        onClick={() => actions.onDelete(reply.id, reply.parent_id)}
+                                        title="Delete"
+                                        className="w-6 h-6 rounded-lg flex items-center justify-center text-gray-300 dark:text-gray-700 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                                    >
+                                        <TrashIcon className="w-3 h-3" />
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* Reply body */}
+                            <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed">
+                                {reply.body}
+                            </p>
+
+                            {/* Reply attachment */}
+                            {reply.attachment_url && reply.attachment_name && (
+                                <a
+                                    href={reply.attachment_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    download={reply.attachment_name}
+                                    className="inline-flex items-center gap-1.5 mt-2 text-xs text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/30 px-2 py-1 rounded-lg transition-colors"
+                                >
+                                    <PaperClipIcon className="w-3 h-3" />
+                                    {reply.attachment_name}
+                                </a>
+                            )}
+
+                            {/* Reply reactions */}
+                            <div className="flex items-center gap-1 mt-2">
+                                <button
+                                    onClick={() => actions.onReaction(reply.id, "up")}
+                                    className={[
+                                        "inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-lg transition-colors",
+                                        reply.reactions.user_reaction === "up"
+                                            ? "bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400"
+                                            : "text-gray-400 dark:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/[0.06]",
+                                    ].join(" ")}
+                                >
+                                    <HandThumbUpIcon className="w-3 h-3" />
+                                    {reply.reactions.up > 0 && <span>{reply.reactions.up}</span>}
+                                </button>
+                                <button
+                                    onClick={() => actions.onReaction(reply.id, "down")}
+                                    className={[
+                                        "inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-lg transition-colors",
+                                        reply.reactions.user_reaction === "down"
+                                            ? "bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400"
+                                            : "text-gray-400 dark:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/[0.06]",
+                                    ].join(" ")}
+                                >
+                                    <HandThumbDownIcon className="w-3 h-3" />
+                                    {reply.reactions.down > 0 && <span>{reply.reactions.down}</span>}
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 // ── Sub-components ───────────────────────────────────────────────────────────
 
 function Avatar({ firstName, lastName }: { firstName: string; lastName: string }) {
@@ -489,6 +876,19 @@ export default function ResidentDetailPage() {
     const [loading, setLoading] = useState(true);
     const [copied, setCopied] = useState(false);
     const [activeTab, setActiveTab] = useState<Tab>("Overview");
+
+    // Notes tab state
+    const [notes, setNotes] = useState<ResidentNote[]>([]);
+    const [notesLoading, setNotesLoading] = useState(false);
+    const [notesFetched, setNotesFetched] = useState(false);
+    const [noteBody, setNoteBody] = useState("");
+    const [noteFile, setNoteFile] = useState<File | null>(null);
+    const [submittingNote, setSubmittingNote] = useState(false);
+    const [replyingTo, setReplyingTo] = useState<string | null>(null);
+    const [replyBody, setReplyBody] = useState("");
+    const [submittingReply, setSubmittingReply] = useState(false);
+    const [expandedReplies, setExpandedReplies] = useState<string[]>([]);
+    const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
     // Activity tab state
     const [activity, setActivity] = useState<ActivityEvent[]>([]);
@@ -603,6 +1003,156 @@ export default function ResidentDetailPage() {
     useEffect(() => {
         if (activeTab === "Documents" && !docsFetched && !docsLoading) {
             fetchDocs();
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab]);
+
+    // Fetch the current user's ID once for delete/author checks
+    useEffect(() => {
+        createClient().auth.getUser().then(({ data }) => {
+            setCurrentUserId(data.user?.id ?? null);
+        });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    async function fetchNotes() {
+        setNotesLoading(true);
+        try {
+            const res = await fetch(
+                `/api/internal/olympus?resource=resident_notes&residentId=${residentId}`
+            );
+            const json = await res.json();
+            setNotes(json.data ?? []);
+            setNotesFetched(true);
+        } finally {
+            setNotesLoading(false);
+        }
+    }
+
+    async function submitNote(body: string, parentId?: string | null, file?: File | null) {
+        let attachmentPath: string | null = null;
+        let attachmentName: string | null = null;
+        if (file) {
+            const supabase = createClient();
+            const ext = file.name.split(".").pop();
+            const path = `residents/${residentId}/notes/${crypto.randomUUID()}.${ext}`;
+            const { error } = await supabase.storage.from("files").upload(path, file);
+            if (error) throw new Error(error.message);
+            attachmentPath = path;
+            attachmentName = file.name;
+        }
+        const res = await fetch("/api/internal/olympus", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                resource: "resident_note",
+                residentId,
+                body,
+                parentId: parentId ?? null,
+                attachmentPath,
+                attachmentName,
+            }),
+        });
+        if (!res.ok) {
+            const json = await res.json();
+            throw new Error(json.error ?? "Failed to post note");
+        }
+    }
+
+    async function handleSubmitNote() {
+        if (!noteBody.trim()) return;
+        setSubmittingNote(true);
+        try {
+            await submitNote(noteBody.trim(), null, noteFile);
+            setNoteBody("");
+            setNoteFile(null);
+            setNotesFetched(false);
+            await fetchNotes();
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setSubmittingNote(false);
+        }
+    }
+
+    async function handleSubmitReply() {
+        if (!replyBody.trim() || !replyingTo) return;
+        setSubmittingReply(true);
+        try {
+            await submitNote(replyBody.trim(), replyingTo);
+            setReplyBody("");
+            setReplyingTo(null);
+            setExpandedReplies((prev) =>
+                prev.includes(replyingTo) ? prev : [...prev, replyingTo]
+            );
+            setNotesFetched(false);
+            await fetchNotes();
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setSubmittingReply(false);
+        }
+    }
+
+    function toggleReaction(noteId: string, reaction: "up" | "down") {
+        // Optimistic update
+        setNotes((prev) =>
+            prev.map((note) => {
+                if (note.id === noteId) return updateNoteReaction(note, reaction);
+                const updatedReplies = note.replies.map((r) =>
+                    r.id === noteId ? updateNoteReaction(r, reaction) : r
+                );
+                return { ...note, replies: updatedReplies };
+            })
+        );
+        fetch("/api/internal/olympus", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ resource: "resident_note_reaction", noteId, reaction }),
+        });
+    }
+
+    function togglePin(noteId: string, currentPinned: boolean) {
+        setNotes((prev) =>
+            prev
+                .map((n) => (n.id === noteId ? { ...n, is_pinned: !currentPinned } : n))
+                .sort((a, b) => {
+                    if (a.is_pinned && !b.is_pinned) return -1;
+                    if (!a.is_pinned && b.is_pinned) return 1;
+                    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+                })
+        );
+        fetch("/api/internal/olympus", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ resource: "resident_note_pin", noteId }),
+        });
+    }
+
+    async function deleteNote(noteId: string, parentId: string | null) {
+        const res = await fetch("/api/internal/olympus", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ resource: "resident_note", noteId }),
+        });
+        if (!res.ok) return;
+        if (parentId) {
+            setNotes((prev) =>
+                prev.map((n) =>
+                    n.id === parentId
+                        ? { ...n, replies: n.replies.filter((r) => r.id !== noteId) }
+                        : n
+                )
+            );
+        } else {
+            setNotes((prev) => prev.filter((n) => n.id !== noteId));
+        }
+    }
+
+    // Lazy-fetch notes when the tab is first opened
+    useEffect(() => {
+        if (activeTab === "Notes" && !notesFetched && !notesLoading) {
+            fetchNotes();
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab]);
@@ -1421,6 +1971,113 @@ export default function ResidentDetailPage() {
                                             </div>
                                         </div>
                                     ))}
+                                </div>
+                            )}
+                        </div>
+                    ) : activeTab === "Notes" ? (
+                        <div className="space-y-4">
+                            {/* Composer */}
+                            <div className="rounded-2xl border border-gray-100 dark:border-white/[0.08] bg-white dark:bg-[#1A0F35] p-4">
+                                <textarea
+                                    value={noteBody}
+                                    onChange={(e) => setNoteBody(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSubmitNote();
+                                    }}
+                                    placeholder="Add a note… (⌘↵ to post)"
+                                    rows={3}
+                                    className="w-full text-sm text-gray-900 dark:text-gray-100 bg-transparent resize-none outline-none placeholder:text-gray-400 dark:placeholder:text-gray-600"
+                                />
+                                {noteFile && (
+                                    <div className="mt-1.5 mb-1">
+                                        <span className="inline-flex items-center gap-1.5 text-xs bg-gray-100 dark:bg-white/[0.08] text-gray-600 dark:text-gray-400 px-2 py-1 rounded-lg">
+                                            <PaperClipIcon className="w-3 h-3 flex-shrink-0" />
+                                            <span className="truncate max-w-[200px]">{noteFile.name}</span>
+                                            <button
+                                                onClick={() => setNoteFile(null)}
+                                                className="text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
+                                            >
+                                                <XMarkIcon className="w-3 h-3" />
+                                            </button>
+                                        </span>
+                                    </div>
+                                )}
+                                <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-gray-100 dark:border-white/[0.06]">
+                                    <label
+                                        className="cursor-pointer text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                                        title="Attach file"
+                                    >
+                                        <input
+                                            type="file"
+                                            className="sr-only"
+                                            onChange={(e) => setNoteFile(e.target.files?.[0] ?? null)}
+                                        />
+                                        <PaperClipIcon className="w-4 h-4" />
+                                    </label>
+                                    <button
+                                        onClick={handleSubmitNote}
+                                        disabled={!noteBody.trim() || submittingNote}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-[#7B3FE4] hover:bg-[#6D28D9] text-white rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        {submittingNote ? "Posting…" : "Post note"}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Loading */}
+                            {notesLoading && (
+                                <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-600 text-sm">
+                                    Loading notes…
+                                </div>
+                            )}
+
+                            {/* Empty state */}
+                            {!notesLoading && notes.length === 0 && (
+                                <div className="flex flex-col items-center justify-center h-48 gap-3 text-center">
+                                    <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center">
+                                        <ChatBubbleOvalLeftIcon className="w-6 h-6 text-gray-400 dark:text-gray-500" />
+                                    </div>
+                                    <div>
+                                        <p className="text-sm font-medium text-gray-600 dark:text-gray-400">No notes yet</p>
+                                        <p className="text-xs text-gray-400 dark:text-gray-600 mt-0.5">
+                                            Be the first to add a note to this resident&apos;s profile.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Notes list */}
+                            {!notesLoading && notes.length > 0 && (
+                                <div className="space-y-3">
+                                    {notes.map((note) => {
+                                        const noteActions: NoteCardActions = {
+                                            onReaction: toggleReaction,
+                                            onPin: togglePin,
+                                            onDelete: deleteNote,
+                                            onReplyStart: (id) => { setReplyingTo(id); setReplyBody(""); },
+                                            onReplyBodyChange: setReplyBody,
+                                            onReplySubmit: handleSubmitReply,
+                                            onReplyCancel: () => { setReplyingTo(null); setReplyBody(""); },
+                                            onToggleReplies: (id) =>
+                                                setExpandedReplies((prev) =>
+                                                    prev.includes(id)
+                                                        ? prev.filter((x) => x !== id)
+                                                        : [...prev, id]
+                                                ),
+                                        };
+                                        return (
+                                            <NoteCard
+                                                key={note.id}
+                                                note={note}
+                                                currentUserId={currentUserId}
+                                                replyingTo={replyingTo}
+                                                replyBody={replyBody}
+                                                submittingReply={submittingReply}
+                                                expandedReplies={expandedReplies}
+                                                actions={noteActions}
+                                            />
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>
