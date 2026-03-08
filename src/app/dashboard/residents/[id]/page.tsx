@@ -15,6 +15,12 @@ import {
     ArrowDownTrayIcon,
     XMarkIcon,
     InboxIcon,
+    ArrowRightOnRectangleIcon,
+    PencilSquareIcon,
+    CalculatorIcon,
+    ClipboardDocumentListIcon,
+    SparklesIcon,
+    ChatBubbleLeftRightIcon,
 } from "@heroicons/react/24/outline";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { createClient } from "@/utils/supabase/client";
@@ -83,6 +89,253 @@ function fmtDate(val: string | null | undefined) {
         month: "2-digit",
         year: "2-digit",
     });
+}
+
+function fmtTime(iso: string) {
+    return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+
+// ── Activity helpers ──────────────────────────────────────────────────────────
+
+type ActivityEvent = {
+    id: string;
+    event_action: string;
+    section: string;
+    sub_section: string | null;
+    event_timestamp: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    metadata: Record<string, any> | null;
+};
+
+/** Generates a timestamp relative to now — used only for dummy data */
+function _ago(days: number, h = 10, m = 0): string {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    d.setHours(h, m, 0, 0);
+    return d.toISOString();
+}
+
+/**
+ * DUMMY DATA — replace with real API call when resident_activity table is instrumented.
+ * See docs/resident-activity.md for the full integration guide.
+ */
+const DUMMY_ACTIVITY: ActivityEvent[] = [
+    // ── Today ─────────────────────────────────────────────────
+    {
+        id: "act-1",
+        event_action: "login",
+        section: "auth",
+        sub_section: null,
+        event_timestamp: _ago(0, 9, 14),
+        metadata: { device: "Mobile", browser: "Safari" },
+    },
+    // ── Yesterday ─────────────────────────────────────────────
+    {
+        id: "act-2",
+        event_action: "message",
+        section: "ai_assistant",
+        sub_section: null,
+        event_timestamp: _ago(1, 16, 45),
+        metadata: { topic: "Staircasing eligibility", message_count: 8 },
+    },
+    {
+        id: "act-3",
+        event_action: "update",
+        section: "profile",
+        sub_section: "financial",
+        event_timestamp: _ago(1, 14, 22),
+        metadata: { fields: ["annual_household_income", "cash_savings"] },
+    },
+    // ── 3 days ago ────────────────────────────────────────────
+    {
+        id: "act-4",
+        event_action: "login",
+        section: "auth",
+        sub_section: null,
+        event_timestamp: _ago(3, 11, 28),
+        metadata: { device: "Desktop", browser: "Chrome" },
+    },
+    {
+        id: "act-5",
+        event_action: "complete",
+        section: "staircasing_calculator",
+        sub_section: null,
+        event_timestamp: _ago(3, 11, 35),
+        metadata: { current_share: 25, target_share: 50, affordable_share: 40 },
+    },
+    {
+        id: "act-6",
+        event_action: "view",
+        section: "staircasing_application",
+        sub_section: "overview",
+        event_timestamp: _ago(3, 11, 38),
+        metadata: { page: "overview" },
+    },
+    // ── 7 days ago ────────────────────────────────────────────
+    {
+        id: "act-7",
+        event_action: "login",
+        section: "auth",
+        sub_section: null,
+        event_timestamp: _ago(7, 9, 5),
+        metadata: { device: "Mobile", browser: "Chrome" },
+    },
+    {
+        id: "act-8",
+        event_action: "message",
+        section: "ai_assistant",
+        sub_section: null,
+        event_timestamp: _ago(7, 9, 18),
+        metadata: { topic: "Mortgage options for staircasing", message_count: 12 },
+    },
+    {
+        id: "act-9",
+        event_action: "update",
+        section: "profile",
+        sub_section: "personal",
+        event_timestamp: _ago(7, 10, 3),
+        metadata: { fields: ["phone_number"] },
+    },
+    // ── 14 days ago ───────────────────────────────────────────
+    {
+        id: "act-10",
+        event_action: "login",
+        section: "auth",
+        sub_section: null,
+        event_timestamp: _ago(14, 15, 43),
+        metadata: { device: "Desktop", browser: "Firefox" },
+    },
+    {
+        id: "act-11",
+        event_action: "complete",
+        section: "staircasing_calculator",
+        sub_section: null,
+        event_timestamp: _ago(14, 15, 51),
+        metadata: { current_share: 25, target_share: 50, affordable_share: 30 },
+    },
+    // ── 21 days ago ───────────────────────────────────────────
+    {
+        id: "act-12",
+        event_action: "login",
+        section: "auth",
+        sub_section: null,
+        event_timestamp: _ago(21, 8, 30),
+        metadata: { device: "Mobile", browser: "Safari" },
+    },
+    {
+        id: "act-13",
+        event_action: "message",
+        section: "ai_assistant",
+        sub_section: null,
+        event_timestamp: _ago(21, 8, 45),
+        metadata: { topic: "Understanding shared ownership costs", message_count: 5 },
+    },
+];
+
+type EventDisplay = {
+    Icon: React.ComponentType<{ className?: string }>;
+    label: string;
+    description: string;
+    iconBg: string;
+    iconColor: string;
+};
+
+function getEventDisplay(event: ActivityEvent): EventDisplay {
+    const { event_action, section, metadata } = event;
+
+    if (event_action === "login") {
+        const parts = [metadata?.browser, metadata?.device].filter(Boolean).join(" · ");
+        return {
+            Icon: ArrowRightOnRectangleIcon,
+            label: "Logged in",
+            description: parts,
+            iconBg: "bg-green-50 dark:bg-green-900/30",
+            iconColor: "text-green-600 dark:text-green-400",
+        };
+    }
+
+    if (section === "ai_assistant") {
+        const desc = metadata?.topic
+            ? `${metadata.topic}${metadata?.message_count ? ` · ${metadata.message_count} messages` : ""}`
+            : "";
+        return {
+            Icon: SparklesIcon,
+            label: "AI conversation",
+            description: desc,
+            iconBg: "bg-violet-50 dark:bg-violet-900/30",
+            iconColor: "text-violet-600 dark:text-violet-400",
+        };
+    }
+
+    if (section === "staircasing_calculator") {
+        const desc = metadata?.affordable_share
+            ? `Affordable up to ${metadata.affordable_share}% · Target ${metadata.target_share}%`
+            : "";
+        return {
+            Icon: CalculatorIcon,
+            label: "Completed staircasing calculator",
+            description: desc,
+            iconBg: "bg-purple-50 dark:bg-purple-900/30",
+            iconColor: "text-purple-600 dark:text-purple-400",
+        };
+    }
+
+    if (section === "staircasing_application") {
+        return {
+            Icon: ClipboardDocumentListIcon,
+            label: "Viewed staircasing application",
+            description: "",
+            iconBg: "bg-amber-50 dark:bg-amber-900/30",
+            iconColor: "text-amber-600 dark:text-amber-400",
+        };
+    }
+
+    if (event_action === "update") {
+        const FIELD_LABELS: Record<string, string> = {
+            annual_household_income: "income",
+            cash_savings: "savings",
+            phone_number: "phone number",
+            first_name: "name",
+            last_name: "name",
+            email: "email address",
+        };
+        const fields: string[] = metadata?.fields ?? [];
+        const readable = [...new Set(fields.map((f) => FIELD_LABELS[f] ?? f))].join(", ");
+        return {
+            Icon: PencilSquareIcon,
+            label: section === "financial" ? "Updated financial information" : "Updated profile",
+            description: readable ? `Changed: ${readable}` : "",
+            iconBg: "bg-blue-50 dark:bg-blue-900/30",
+            iconColor: "text-blue-600 dark:text-blue-400",
+        };
+    }
+
+    // Fallback
+    return {
+        Icon: ChatBubbleLeftRightIcon,
+        label: event_action,
+        description: section,
+        iconBg: "bg-gray-100 dark:bg-white/[0.06]",
+        iconColor: "text-gray-500 dark:text-gray-400",
+    };
+}
+
+function groupActivity(events: ActivityEvent[]): { label: string; events: ActivityEvent[] }[] {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+    const groups = new Map<string, ActivityEvent[]>();
+
+    for (const event of events) {
+        const d = new Date(event.event_timestamp); d.setHours(0, 0, 0, 0);
+        let label: string;
+        if (d.getTime() === today.getTime()) label = "Today";
+        else if (d.getTime() === yesterday.getTime()) label = "Yesterday";
+        else label = d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+        if (!groups.has(label)) groups.set(label, []);
+        groups.get(label)!.push(event);
+    }
+
+    return Array.from(groups.entries()).map(([label, events]) => ({ label, events }));
 }
 
 // ── Document helpers ─────────────────────────────────────────────────────────
@@ -237,6 +490,11 @@ export default function ResidentDetailPage() {
     const [copied, setCopied] = useState(false);
     const [activeTab, setActiveTab] = useState<Tab>("Overview");
 
+    // Activity tab state
+    const [activity, setActivity] = useState<ActivityEvent[]>([]);
+    const [activityLoading, setActivityLoading] = useState(false);
+    const [activityFetched, setActivityFetched] = useState(false);
+
     // Documents tab state
     const [docs, setDocs] = useState<ResidentDoc[]>([]);
     const [docsLoading, setDocsLoading] = useState(false);
@@ -345,6 +603,43 @@ export default function ResidentDetailPage() {
     useEffect(() => {
         if (activeTab === "Documents" && !docsFetched && !docsLoading) {
             fetchDocs();
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab]);
+
+    async function fetchActivity() {
+        setActivityLoading(true);
+        try {
+            // ── DUMMY DATA ────────────────────────────────────────────────────────
+            // Replace the line below with the real API call once resident_activity
+            // is instrumented. See docs/resident-activity.md for the full guide.
+            //
+            // const res = await fetch(
+            //   `/api/internal/olympus?resource=resident_activity&residentId=${residentId}`
+            // );
+            // const json = await res.json();
+            // const events: ActivityEvent[] = (json.data ?? []).map((e: any) => ({
+            //   id: String(e.id),
+            //   event_action: e.event_action,
+            //   section: e.section,
+            //   sub_section: e.sub_section,
+            //   event_timestamp: e.date + "T" + e.time,
+            //   metadata: e.metadata,
+            // }));
+            // setActivity(events);
+            // ─────────────────────────────────────────────────────────────────────
+            await new Promise((r) => setTimeout(r, 300)); // simulate network
+            setActivity(DUMMY_ACTIVITY);
+            setActivityFetched(true);
+        } finally {
+            setActivityLoading(false);
+        }
+    }
+
+    // Lazy-fetch activity when the tab is first opened
+    useEffect(() => {
+        if (activeTab === "Activity" && !activityFetched && !activityLoading) {
+            fetchActivity();
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab]);
@@ -1049,6 +1344,83 @@ export default function ResidentDetailPage() {
                                             </button>
                                         </div>
                                     </div>
+                                </div>
+                            )}
+                        </div>
+                    ) : activeTab === "Activity" ? (
+                        <div>
+                            {activityLoading && (
+                                <div className="flex items-center justify-center h-48 text-gray-400 dark:text-gray-600 text-sm">
+                                    Loading activity…
+                                </div>
+                            )}
+
+                            {!activityLoading && activity.length === 0 && (
+                                <div className="flex flex-col items-center justify-center h-64 gap-3 text-center">
+                                    <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center">
+                                        <CalendarIcon className="w-6 h-6 text-gray-400 dark:text-gray-500" />
+                                    </div>
+                                    <div>
+                                        <p className="text-sm font-medium text-gray-600 dark:text-gray-400">No activity yet</p>
+                                        <p className="text-xs text-gray-400 dark:text-gray-600 mt-0.5">
+                                            Activity will appear here once the resident uses the app.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {!activityLoading && activity.length > 0 && (
+                                <div className="space-y-6">
+                                    {groupActivity(activity).map(({ label, events }) => (
+                                        <div key={label}>
+                                            {/* Date group header */}
+                                            <div className="flex items-center gap-3 mb-3">
+                                                <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 flex-shrink-0">
+                                                    {label}
+                                                </p>
+                                                <div className="flex-1 h-px bg-gray-100 dark:bg-white/[0.06]" />
+                                            </div>
+
+                                            {/* Event rows */}
+                                            <div className="rounded-2xl border border-gray-100 dark:border-white/[0.08] bg-white dark:bg-[#1A0F35] overflow-hidden">
+                                                {events.map((event, i) => {
+                                                    const display = getEventDisplay(event);
+                                                    const { Icon } = display;
+                                                    return (
+                                                        <div
+                                                            key={event.id}
+                                                            className={[
+                                                                "flex items-start gap-3 px-5 py-3.5 transition-colors hover:bg-gray-50 dark:hover:bg-white/[0.02]",
+                                                                i > 0 ? "border-t border-gray-100 dark:border-white/[0.06]" : "",
+                                                            ].join(" ")}
+                                                        >
+                                                            {/* Icon */}
+                                                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5 ${display.iconBg}`}>
+                                                                <Icon className={`w-4 h-4 ${display.iconColor}`} />
+                                                            </div>
+
+                                                            {/* Label + description */}
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                                                    {display.label}
+                                                                </p>
+                                                                {display.description && (
+                                                                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                                                                        {display.description}
+                                                                    </p>
+                                                                )}
+                                                            </div>
+
+                                                            {/* Time */}
+                                                            <span className="text-xs text-gray-400 dark:text-gray-600 flex-shrink-0 mt-0.5 tabular-nums">
+                                                                {fmtTime(event.event_timestamp)}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             )}
                         </div>
