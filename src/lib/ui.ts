@@ -1,5 +1,5 @@
 export const UI = {
-  page:          "flex flex-col h-screen bg-white dark:bg-[#0E0823]",
+  page:          "flex flex-col h-[calc(100vh-3.5rem)] sm:h-screen bg-white dark:bg-[#0E0823]",
   toolbar:       "flex items-center gap-3 px-6 py-3 border-b border-gray-100 dark:border-white/10 bg-white dark:bg-[#160B30] flex-shrink-0",
   content:       "flex-1 overflow-auto px-6 py-5",
   card:          "bg-white dark:bg-[#1A0F35] rounded-xl border border-gray-100 dark:border-white/10 p-5",

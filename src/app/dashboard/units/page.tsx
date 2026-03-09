@@ -562,7 +562,7 @@ function DevelopmentsView({ search }: { search: string }) {
             )}
 
             {/* Slide-over */}
-            <div className={["fixed top-0 right-0 h-screen w-[420px] bg-white dark:bg-[#160B30] shadow-2xl z-50",
+            <div className={["fixed top-0 right-0 h-screen w-full sm:w-[420px] bg-white dark:bg-[#160B30] shadow-2xl z-50",
                 "flex flex-col transition-transform duration-300 ease-in-out",
                 selected ? "translate-x-0" : "translate-x-full"].join(" ")}>
                 {selected && (
@@ -894,7 +894,7 @@ export default function UnitsPage() {
                             </button>
                         ))}
                     </div>
-                    <div className={`${UI.searchInput} w-72`}>
+                    <div className={`${UI.searchInput} w-44 sm:w-72`}>
                         <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
                         <input
                             value={search}
@@ -911,7 +911,7 @@ export default function UnitsPage() {
                 </div>
 
                 {/* Stat cards — always visible */}
-                <div className="px-6 pt-5 pb-4 grid grid-cols-2 lg:grid-cols-4 gap-4 flex-shrink-0">
+                <div className="px-6 pt-5 pb-4 grid grid-cols-2 md:grid-cols-4 gap-4 flex-shrink-0">
                     <MiniBarCard
                         title="Units Added"
                         value={String(units.length)}
@@ -1070,7 +1070,7 @@ export default function UnitsPage() {
             )}
 
             {/* Unit slide-over panel */}
-            <div className={["fixed top-0 right-0 h-screen w-[440px] bg-white dark:bg-[#160B30] shadow-2xl z-50",
+            <div className={["fixed top-0 right-0 h-screen w-full sm:w-[440px] bg-white dark:bg-[#160B30] shadow-2xl z-50",
                 "flex flex-col transition-transform duration-300 ease-in-out",
                 selected && tab === "units" ? "translate-x-0" : "translate-x-full"].join(" ")}>
                 {selected && tab === "units" && (
