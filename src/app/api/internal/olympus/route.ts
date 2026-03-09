@@ -553,8 +553,14 @@ export async function GET(req: NextRequest) {
 
             if (cduRows.error) throw cduRows.error;
 
+            // Build the set of CDU unit IDs we actually found for this company
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const cduUnitIds = new Set((cduRows.data ?? []).map((u: any) => u.id as number));
+
             // Step 3: fetch all residents for this company
-            const { data: residents, error: resError } = await supabase
+            // Try company_id filter first; if it returns nothing, fall back to no filter (rely on RLS)
+            let residents: Record<string, unknown>[] | null = null;
+            const { data: resFiltered, error: resError } = await supabase
                 .from("resident")
                 .select(
                     `id, first_name, last_name, email, company_development_unit_id,
@@ -565,19 +571,39 @@ export async function GET(req: NextRequest) {
                 .eq("company_id", targetCompanyId);
             if (resError) throw resError;
 
+            if ((resFiltered ?? []).length > 0) {
+                residents = resFiltered;
+            } else {
+                // company_id returned nothing — fall back to RLS-scoped query (no explicit filter)
+                const { data: resFallback, error: resFallbackError } = await supabase
+                    .from("resident")
+                    .select(
+                        `id, first_name, last_name, email, company_development_unit_id,
+                         address, city, county, postcode, unit_type, purchase_price,
+                         purchase_date, percentage_sold, monthly_rent, service_charge,
+                         current_share, created_at, updated_at`
+                    );
+                if (resFallbackError) throw resFallbackError;
+                residents = resFallback;
+            }
+
             // Build resident lookup maps
+            // CDU = resident's unit_id is one of THIS company's CDU units
+            // UAU = no unit_id, OR unit_id not in this company's portfolio
             const resByUnitId = new Map<number, { id: number; name: string; email: string | null }>();
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const uauResidents: any[] = [];
 
             for (const r of residents ?? []) {
-                if (r.company_development_unit_id) {
-                    resByUnitId.set(r.company_development_unit_id, {
-                        id: r.id,
+                const unitId = r.company_development_unit_id as number | null;
+                if (unitId && cduUnitIds.has(unitId)) {
+                    resByUnitId.set(unitId, {
+                        id: r.id as number,
                         name: `${r.first_name} ${r.last_name}`.trim(),
-                        email: r.email,
+                        email: r.email as string | null,
                     });
                 } else {
+                    // UAU: no matched CDU unit (either null, or points outside this company)
                     uauResidents.push(r);
                 }
             }
@@ -664,6 +690,13 @@ export async function GET(req: NextRequest) {
                 meta: {
                     cdu_count: resByUnitId.size,
                     uau_count: uauResidents.length,
+                    _debug: {
+                        target_company_id: targetCompanyId,
+                        dev_count: devIds.length,
+                        cdu_unit_count: cduRows.data?.length ?? 0,
+                        resident_count: residents?.length ?? 0,
+                        residents_via_company_filter: (resFiltered ?? []).length,
+                    },
                 },
             });
         }
