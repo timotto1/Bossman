@@ -9,6 +9,7 @@ import {
     BuildingOffice2Icon,
     UsersIcon,
     MagnifyingGlassIcon,
+    Squares2X2Icon,
 } from "@heroicons/react/24/outline";
 
 import { useUser } from "@/context/user-context";
@@ -24,6 +25,7 @@ const NAV_SECTIONS = [
     {
         title: "RESIDENTS",
         links: [
+            { href: "/dashboard/overview", label: "Dashboard", icon: Squares2X2Icon },
             { href: "/dashboard/residents", label: "Residents", icon: IdentificationIcon },
             { href: "/dashboard/transactions", label: "Transactions", icon: ShoppingCartIcon },
         ],
