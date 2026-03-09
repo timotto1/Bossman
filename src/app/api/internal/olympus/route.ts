@@ -290,69 +290,85 @@ export async function GET(req: NextRequest) {
         }
 
         // ----------------------------------------------------------------
-        // ✅ CASE 5: Transactions for a Company (with resident documents)
+        // ✅ CASE 5: Transactions (joined with resident info + documents)
         // ----------------------------------------------------------------
         if (resource === "transactions") {
-            const companyId = searchParams.get("companyId");
             const status = searchParams.get("status");
 
-            if (!companyId) {
-                return NextResponse.json(
-                    { error: "Missing companyId parameter" },
-                    { status: 400 }
-                );
-            }
+            // Admins can scope to a specific company; everyone else sees their own
+            const targetCompanyId =
+                hasBossmanAccess && selectedCompanyId
+                    ? Number(selectedCompanyId)
+                    : userCompanyId;
 
-            let query = supabase
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            let query: any = supabase
                 .from("client_transaction")
                 .select(
-                    `
-          id,
-          company_id,
-          resident_id,
-          created_at,
-          rics_valuation,
-          transaction_deposit,
-          share_to_purchase,
-          finance_method,
-          status
-        `
+                    `id, company_id, resident_id, rics_valuation, transaction_deposit,
+                     share_to_purchase, finance_method, status, archived, created_at,
+                     resident:resident_id (
+                       id, first_name, last_name, email, current_share,
+                       company:company_id ( name )
+                     )`
                 )
-                .eq("company_id", companyId)
+                .eq("company_id", targetCompanyId)
                 .order("created_at", { ascending: false });
 
             if (status && status !== "all") {
                 query = query.eq("status", status);
             }
+            if (start) query = query.gte("created_at", start);
+            if (end)   query = query.lte("created_at", end + "T23:59:59Z");
 
             const { data: txs, error: txError } = await query;
             if (txError) throw txError;
             if (!txs?.length) return NextResponse.json({ data: [] });
 
-            const residentIds = txs.map((t) => t.resident_id).filter(Boolean);
+            const residentIds = txs
+                .map((t: { resident_id: number | null }) => t.resident_id)
+                .filter(Boolean) as number[];
 
             const { data: docs, error: docError } = await supabase
                 .from("resident_documents")
-                .select(
-                    "resident_id, filename, supabase_path, document_type, document_size"
-                )
+                .select("resident_id, filename, supabase_path, document_type, document_size")
                 .in("resident_id", residentIds);
 
             if (docError) throw docError;
 
             const storageUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-            const merged = txs.map((tx) => ({
-                ...tx,
-                documents:
-                    docs
-                        ?.filter((d) => d.resident_id === tx.resident_id)
-                        ?.map((d) => ({
-                            name: d.filename,
-                            type: d.document_type,
-                            size: d.document_size,
-                            url: `${storageUrl}/storage/v1/object/public/${d.supabase_path}`,
-                        })) || [],
-            }));
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const merged = (txs as any[]).map((tx) => {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const res = tx.resident as any;
+                return {
+                    id: tx.id,
+                    company_id: tx.company_id,
+                    resident_id: tx.resident_id,
+                    resident_name: res
+                        ? `${res.first_name} ${res.last_name}`.trim()
+                        : null,
+                    resident_email: res?.email ?? null,
+                    housing_association: res?.company?.name ?? null,
+                    current_share: res?.current_share != null ? Number(res.current_share) : null,
+                    rics_valuation: tx.rics_valuation != null ? Number(tx.rics_valuation) : null,
+                    transaction_deposit: tx.transaction_deposit != null ? Number(tx.transaction_deposit) : null,
+                    share_to_purchase: tx.share_to_purchase != null ? Number(tx.share_to_purchase) : null,
+                    finance_method: tx.finance_method,
+                    status: tx.status,
+                    archived: tx.archived,
+                    created_at: tx.created_at,
+                    documents:
+                        docs
+                            ?.filter((d: { resident_id: number }) => d.resident_id === tx.resident_id)
+                            ?.map((d: { filename: string; document_type: string | null; document_size: number | null; supabase_path: string }) => ({
+                                name: d.filename,
+                                type: d.document_type,
+                                size: d.document_size,
+                                url: `${storageUrl}/storage/v1/object/public/${d.supabase_path}`,
+                            })) ?? [],
+                };
+            });
 
             return NextResponse.json({ data: merged });
         }
