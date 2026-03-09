@@ -702,7 +702,25 @@ export async function GET(req: NextRequest) {
         }
 
         // ----------------------------------------------------------------
-        // CASE 9b: Developments
+        // CASE 9b: Unit Change Log
+        // ----------------------------------------------------------------
+        if (resource === "unit_change_log") {
+            const unitKey = searchParams.get("unitKey");
+            if (!unitKey) {
+                return NextResponse.json({ error: "Missing unitKey" }, { status: 400 });
+            }
+            const { data, error } = await supabase
+                .from("unit_change_log")
+                .select("id, unit_key, changed_by_name, changes, created_at")
+                .eq("unit_key", unitKey)
+                .order("created_at", { ascending: false })
+                .limit(50);
+            if (error) throw error;
+            return NextResponse.json({ data: data ?? [] });
+        }
+
+        // ----------------------------------------------------------------
+        // CASE 9c: Developments
         // ----------------------------------------------------------------
         if (resource === "developments") {
             const targetCompanyId =
@@ -981,6 +999,175 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Unknown resource" }, { status: 400 });
     } catch (err) {
         console.error("❌ Olympus POST Error:", err);
+        const message = (err as Error).message || "Unexpected error";
+        const status = message === "Unauthorized" ? 401 : message.includes("Forbidden") ? 403 : 400;
+        return NextResponse.json({ error: message }, { status });
+    }
+}
+
+// ── PATCH ────────────────────────────────────────────────────────────────────
+
+function diffFields(
+    current: Record<string, unknown>,
+    updated: Record<string, unknown>
+): Record<string, { from: unknown; to: unknown }> {
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    for (const [key, newVal] of Object.entries(updated)) {
+        const oldVal = current[key] ?? null;
+        const norm = (v: unknown) => (v == null ? null : String(v));
+        if (norm(oldVal) !== norm(newVal)) {
+            changes[key] = { from: oldVal, to: newVal };
+        }
+    }
+    return changes;
+}
+
+export async function PATCH(req: NextRequest) {
+    try {
+        const { hasBossmanAccess, company_id: userCompanyId, user } = await getUserCompany();
+        if (!hasBossmanAccess) {
+            return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+        }
+
+        const payload = await req.json();
+        const { resource, id } = payload;
+        const supabase = await createClient();
+
+        if (resource === "unit") {
+            if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+
+            // Verify unit belongs to a development owned by this user's company
+            const { data: unitRow, error: unitCheckErr } = await supabase
+                .from("company_development_units")
+                .select("development_id")
+                .eq("id", id)
+                .single();
+            if (unitCheckErr || !unitRow) {
+                return NextResponse.json({ error: "Unit not found" }, { status: 404 });
+            }
+            const { data: devRow, error: devCheckErr } = await supabase
+                .from("company_development")
+                .select("company_id")
+                .eq("id", unitRow.development_id)
+                .single();
+            if (devCheckErr || !devRow) {
+                return NextResponse.json({ error: "Development not found" }, { status: 404 });
+            }
+            if (devRow.company_id !== userCompanyId) {
+                return NextResponse.json({ error: "Forbidden: unit not in your company" }, { status: 403 });
+            }
+
+            const numericFields = ["purchase_price", "percentage_sold", "monthly_rent", "service_charge", "specified_rent"];
+            const allowedFields = ["status", "unit_type", "lease_type", "purchase_date", "is_verified", ...numericFields] as const;
+
+            const updateFields: Record<string, unknown> = {};
+            for (const key of allowedFields) {
+                if (!(key in payload)) continue;
+                const val = payload[key];
+                if (key === "is_verified") {
+                    updateFields[key] = Boolean(val);
+                } else if (numericFields.includes(key)) {
+                    updateFields[key] = val !== "" && val != null ? Number(val) : null;
+                } else {
+                    updateFields[key] = val !== "" ? val : null;
+                }
+            }
+
+            // Fetch current values to compute diff
+            const { data: currentUnit } = await supabase
+                .from("company_development_units")
+                .select(allowedFields.join(", "))
+                .eq("id", id)
+                .single();
+
+            const { error: updateErr } = await supabase
+                .from("company_development_units")
+                .update(updateFields)
+                .eq("id", id);
+            if (updateErr) throw updateErr;
+
+            // Log the change
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const changes = currentUnit ? diffFields(currentUnit as unknown as Record<string, unknown>, updateFields) : updateFields;
+            if (Object.keys(changes).length > 0) {
+                const authorName = await getAuthorName(supabase, user);
+                await supabase.from("unit_change_log").insert({
+                    unit_key: `cdu-${id}`,
+                    company_id: userCompanyId,
+                    changed_by: user.id,
+                    changed_by_name: authorName,
+                    changes,
+                });
+            }
+
+            return NextResponse.json({ ok: true });
+        }
+
+        if (resource === "uau_unit") {
+            const residentId = id;
+            if (!residentId) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+
+            const { data: resRow, error: resCheckErr } = await supabase
+                .from("resident")
+                .select("company_id")
+                .eq("id", residentId)
+                .single();
+            if (resCheckErr || !resRow) {
+                return NextResponse.json({ error: "Resident not found" }, { status: 404 });
+            }
+            if (resRow.company_id !== userCompanyId) {
+                return NextResponse.json({ error: "Forbidden: resident not in your company" }, { status: 403 });
+            }
+
+            const numericFields = ["purchase_price", "percentage_sold", "monthly_rent", "service_charge"];
+            const allowedFields = ["unit_type", "purchase_date", ...numericFields] as const;
+
+            const updateFields: Record<string, unknown> = {};
+            for (const key of allowedFields) {
+                if (!(key in payload)) continue;
+                const val = payload[key];
+                if (numericFields.includes(key)) {
+                    updateFields[key] = val !== "" && val != null ? Number(val) : null;
+                } else {
+                    updateFields[key] = val !== "" ? val : null;
+                }
+            }
+
+            // Fetch current values to compute diff
+            const { data: currentResident } = await supabase
+                .from("resident")
+                .select(allowedFields.join(", "))
+                .eq("id", residentId)
+                .single();
+
+            const { error: updateErr } = await supabase
+                .from("resident")
+                .update(updateFields)
+                .eq("id", residentId);
+            if (updateErr) throw updateErr;
+
+            // Log the change
+            const changes = currentResident
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                ? diffFields(currentResident as unknown as Record<string, unknown>, updateFields)
+                : updateFields;
+            if (Object.keys(changes).length > 0) {
+                const authorName = await getAuthorName(supabase, user);
+                await supabase.from("unit_change_log").insert({
+                    unit_key: `uau-${residentId}`,
+                    company_id: userCompanyId,
+                    changed_by: user.id,
+                    changed_by_name: authorName,
+                    changes,
+                });
+            }
+
+            return NextResponse.json({ ok: true });
+        }
+
+        return NextResponse.json({ error: "Unknown resource" }, { status: 400 });
+    } catch (err) {
+        console.error("❌ Olympus PATCH Error:", err);
         const message = (err as Error).message || "Unexpected error";
         const status = message === "Unauthorized" ? 401 : message.includes("Forbidden") ? 403 : 400;
         return NextResponse.json({ error: message }, { status });

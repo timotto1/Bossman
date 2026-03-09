@@ -273,6 +273,18 @@ CREATE TABLE IF NOT EXISTS public.password_history (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- unit_change_log
+CREATE TABLE IF NOT EXISTS public.unit_change_log (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    unit_key        TEXT        NOT NULL,   -- "cdu-{id}" or "uau-{residentId}"
+    company_id      BIGINT      REFERENCES public.company(id) ON DELETE SET NULL,
+    changed_by      UUID        REFERENCES auth.users(id) ON DELETE SET NULL,
+    changed_by_name TEXT,
+    changes         JSONB       NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_unit_change_log_unit_key ON public.unit_change_log(unit_key);
+
 -- =============================================================================
 -- TRIGGERS
 -- =============================================================================
@@ -332,7 +344,7 @@ DECLARE
         'user_roles','case_managers','platform_activity','resident',
         'resident_activity','client_transaction','resident_documents',
         'postcode_data','company_development','company_development_units',
-        'unit_valuation','verification_tokens','password_history'
+        'unit_valuation','verification_tokens','password_history','unit_change_log'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP
