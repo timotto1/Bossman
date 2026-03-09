@@ -1,6 +1,15 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
+import { createClient as createSupabaseJsClient } from "@supabase/supabase-js";
 
 import { createClient } from "@/utils/supabase/server";
+
+function getAdminClient() {
+    return createSupabaseJsClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY!,
+        { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getAuthorName(supabase: any, user: any): Promise<string> {
@@ -428,7 +437,70 @@ export async function GET(req: NextRequest) {
         }
 
         // ----------------------------------------------------------------
-        // CASE 7: Companies
+        // CASE 7: Platform Users (admin list)
+        // ----------------------------------------------------------------
+        if (resource === "platform_users") {
+            const adminSupabase = getAdminClient();
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const { data: authData, error: authError } = await (adminSupabase.auth.admin as any).listUsers({ perPage: 1000, page: 1 });
+            if (authError) throw authError;
+
+            const { data: profiles } = await supabase
+                .from("profiles")
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                .select("id, company_id, company:company_id(id, name)") as any;
+
+            const { data: userRoles } = await supabase
+                .from("user_roles")
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                .select("user_id, role:role_id(id, name)") as any;
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const formatted = ((authData?.users ?? []) as any[]).map((u: any) => {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const profile = (profiles ?? []).find((p: any) => p.id === u.id);
+                const uRoles = (userRoles ?? [])
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    .filter((r: any) => r.user_id === u.id)
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    .map((r: any) => r.role?.name)
+                    .filter(Boolean);
+                const meta = u.user_metadata ?? {};
+                const name = meta.first_name
+                    ? `${meta.first_name} ${meta.last_name ?? ""}`.trim()
+                    : meta.full_name ?? null;
+                return {
+                    id: u.id,
+                    email: u.email ?? null,
+                    name,
+                    company_id: profile?.company_id ?? null,
+                    housing_association: profile?.company?.name ?? null,
+                    roles: uRoles,
+                    last_sign_in_at: u.last_sign_in_at ?? null,
+                    created_at: u.created_at,
+                    confirmed: !!u.email_confirmed_at,
+                    status: u.email_confirmed_at ? "Confirmed" : "Pending",
+                };
+            });
+
+            return NextResponse.json({ data: formatted });
+        }
+
+        // ----------------------------------------------------------------
+        // CASE 8: Roles
+        // ----------------------------------------------------------------
+        if (resource === "roles") {
+            const { data, error } = await supabase
+                .from("roles")
+                .select("id, name")
+                .order("name", { ascending: true });
+            if (error) throw error;
+            return NextResponse.json({ data });
+        }
+
+        // ----------------------------------------------------------------
+        // CASE 9: Companies
         // ----------------------------------------------------------------
         let companyQuery = supabase
             .from("company")
@@ -575,6 +647,50 @@ export async function POST(req: NextRequest) {
                 .eq("id", noteId);
             if (error) throw error;
             return NextResponse.json({ is_pinned: newPinned });
+        }
+
+        // ── Invite User ──────────────────────────────────────────────────────
+
+        if (resource === "platform_invite_user") {
+            const { email, company_id, role_id } = payload;
+            if (!email || !company_id) {
+                return NextResponse.json({ error: "Email and housing association are required." }, { status: 400 });
+            }
+
+            const adminSupabase = getAdminClient();
+            const appUrl = new URL(req.url).origin;
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const { data: linkData, error: linkError } = await (adminSupabase.auth.admin as any).generateLink({
+                type: "invite",
+                email,
+                options: {
+                    redirect_to: `${appUrl}/dashboard`,
+                    data: {
+                        company: Number(company_id),
+                        bossman_access: "Yes",
+                    },
+                },
+            });
+
+            if (linkError) throw new Error(linkError.message ?? "Failed to generate invite link");
+
+            const userId = linkData.user.id;
+            const magic_link: string = linkData.properties.action_link;
+
+            // Upsert profile row
+            await supabase
+                .from("profiles")
+                .upsert({ id: userId, company_id: Number(company_id) }, { onConflict: "id" });
+
+            // Add role if provided
+            if (role_id) {
+                await supabase
+                    .from("user_roles")
+                    .upsert({ user_id: userId, role_id }, { onConflict: "user_id,role_id" });
+            }
+
+            return NextResponse.json({ magic_link, user_id: userId });
         }
 
         // ── Documents ────────────────────────────────────────────────────────
