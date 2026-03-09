@@ -516,7 +516,103 @@ export async function GET(req: NextRequest) {
         }
 
         // ----------------------------------------------------------------
-        // CASE 9: Companies
+        // CASE 9: Units (company_development_units + development + valuation + resident)
+        // ----------------------------------------------------------------
+        if (resource === "units") {
+            const targetCompanyId =
+                hasBossmanAccess && selectedCompanyId
+                    ? Number(selectedCompanyId)
+                    : userCompanyId;
+
+            // Fetch all CDUs (company-provided units) for this company
+            const { data: units, error: unitsError } = await supabase
+                .from("company_development_units")
+                .select(
+                    `id, internal_id, plot_number, address_1, address_2, city, county,
+                     postcode, region, unit_type, lease_type, status, purchase_date,
+                     purchase_price, percentage_sold, monthly_rent, service_charge,
+                     specified_rent, is_verified, created_at, updated_at,
+                     development:development_id (
+                         id, name, postcode, city, is_shared_ownership, is_help_to_buy,
+                         housing_provider, completion_date, company_id
+                     ),
+                     valuation:unit_valuation (
+                         valuation_amount, valuation_date, valuation_source
+                     )`
+                )
+                .eq("development.company_id", targetCompanyId)
+                .not("development", "is", null)
+                .order("created_at", { ascending: false });
+
+            if (unitsError) throw unitsError;
+
+            // Fetch residents to resolve CDU/UAU and link names
+            const { data: residents, error: resError } = await supabase
+                .from("resident")
+                .select(
+                    "id, first_name, last_name, email, company_development_unit_id, created_at"
+                )
+                .eq("company_id", targetCompanyId);
+
+            if (resError) throw resError;
+
+            const residentsByUnitId = new Map<number, { id: number; name: string; email: string | null }>();
+            let uauCount = 0;
+            let cduCount = 0;
+            for (const r of residents ?? []) {
+                if (r.company_development_unit_id) {
+                    cduCount++;
+                    residentsByUnitId.set(r.company_development_unit_id, {
+                        id: r.id,
+                        name: `${r.first_name} ${r.last_name}`.trim(),
+                        email: r.email,
+                    });
+                } else {
+                    uauCount++;
+                }
+            }
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const formatted = (units ?? []).map((u: any) => ({
+                id: u.id,
+                internal_id: u.internal_id,
+                plot_number: u.plot_number,
+                address: [u.address_1, u.address_2].filter(Boolean).join(", "),
+                city: u.city,
+                county: u.county,
+                postcode: u.postcode,
+                region: u.region,
+                unit_type: u.unit_type,
+                lease_type: u.lease_type,
+                status: u.status,
+                purchase_date: u.purchase_date,
+                purchase_price: u.purchase_price != null ? Number(u.purchase_price) : null,
+                percentage_sold: u.percentage_sold != null ? Number(u.percentage_sold) : null,
+                monthly_rent: u.monthly_rent != null ? Number(u.monthly_rent) : null,
+                service_charge: u.service_charge != null ? Number(u.service_charge) : null,
+                specified_rent: u.specified_rent != null ? Number(u.specified_rent) : null,
+                is_verified: u.is_verified,
+                created_at: u.created_at,
+                updated_at: u.updated_at,
+                development_id: u.development?.id ?? null,
+                development_name: u.development?.name ?? null,
+                housing_provider: u.development?.housing_provider ?? null,
+                is_shared_ownership: u.development?.is_shared_ownership ?? false,
+                valuation_amount: u.valuation?.valuation_amount != null
+                    ? Number(u.valuation.valuation_amount)
+                    : null,
+                valuation_date: u.valuation?.valuation_date ?? null,
+                resident: residentsByUnitId.get(u.id) ?? null,
+            }));
+
+            return NextResponse.json({
+                data: formatted,
+                meta: { cdu_count: cduCount, uau_count: uauCount },
+            });
+        }
+
+        // ----------------------------------------------------------------
+        // CASE 10: Companies
         // ----------------------------------------------------------------
         let companyQuery = supabase
             .from("company")
