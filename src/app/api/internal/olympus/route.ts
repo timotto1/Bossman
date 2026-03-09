@@ -516,7 +516,7 @@ export async function GET(req: NextRequest) {
         }
 
         // ----------------------------------------------------------------
-        // CASE 9: Units (company_development_units + development + valuation + resident)
+        // CASE 9: Units — CDU (company_development_units) + UAU (resident-added)
         // ----------------------------------------------------------------
         if (resource === "units") {
             const targetCompanyId =
@@ -524,90 +524,203 @@ export async function GET(req: NextRequest) {
                     ? Number(selectedCompanyId)
                     : userCompanyId;
 
-            // Fetch all CDUs (company-provided units) for this company
-            const { data: units, error: unitsError } = await supabase
-                .from("company_development_units")
-                .select(
-                    `id, internal_id, plot_number, address_1, address_2, city, county,
-                     postcode, region, unit_type, lease_type, status, purchase_date,
-                     purchase_price, percentage_sold, monthly_rent, service_charge,
-                     specified_rent, is_verified, created_at, updated_at,
-                     development:development_id (
-                         id, name, postcode, city, is_shared_ownership, is_help_to_buy,
-                         housing_provider, completion_date, company_id
-                     ),
-                     valuation:unit_valuation (
-                         valuation_amount, valuation_date, valuation_source
-                     )`
-                )
-                .eq("development.company_id", targetCompanyId)
-                .not("development", "is", null)
-                .order("created_at", { ascending: false });
+            // Step 1: get all developments for this company (avoids cross-join filter issues)
+            const { data: devs, error: devsError } = await supabase
+                .from("company_development")
+                .select("id, name, postcode, city, is_shared_ownership, is_help_to_buy, housing_provider, completion_date")
+                .eq("company_id", targetCompanyId);
+            if (devsError) throw devsError;
 
-            if (unitsError) throw unitsError;
+            const devMap = new Map((devs ?? []).map((d) => [d.id as number, d]));
+            const devIds = [...devMap.keys()];
 
-            // Fetch residents to resolve CDU/UAU and link names
+            // Step 2: fetch CDU units by development_id (reliable, no join-filter bug)
+            const cduRows = devIds.length > 0
+                ? await supabase
+                    .from("company_development_units")
+                    .select(
+                        `id, development_id, internal_id, plot_number, address_1, address_2,
+                         city, county, postcode, region, unit_type, lease_type, status,
+                         purchase_date, purchase_price, percentage_sold, monthly_rent,
+                         service_charge, specified_rent, is_verified, created_at, updated_at,
+                         valuation:unit_valuation (
+                             valuation_amount, valuation_date, valuation_source
+                         )`
+                    )
+                    .in("development_id", devIds)
+                    .order("created_at", { ascending: false })
+                : { data: [], error: null };
+
+            if (cduRows.error) throw cduRows.error;
+
+            // Step 3: fetch all residents for this company
             const { data: residents, error: resError } = await supabase
                 .from("resident")
                 .select(
-                    "id, first_name, last_name, email, company_development_unit_id, created_at"
+                    `id, first_name, last_name, email, company_development_unit_id,
+                     address, city, county, postcode, unit_type, purchase_price,
+                     purchase_date, percentage_sold, monthly_rent, service_charge,
+                     current_share, created_at, updated_at`
                 )
                 .eq("company_id", targetCompanyId);
-
             if (resError) throw resError;
 
-            const residentsByUnitId = new Map<number, { id: number; name: string; email: string | null }>();
-            let uauCount = 0;
-            let cduCount = 0;
+            // Build resident lookup maps
+            const resByUnitId = new Map<number, { id: number; name: string; email: string | null }>();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const uauResidents: any[] = [];
+
             for (const r of residents ?? []) {
                 if (r.company_development_unit_id) {
-                    cduCount++;
-                    residentsByUnitId.set(r.company_development_unit_id, {
+                    resByUnitId.set(r.company_development_unit_id, {
                         id: r.id,
                         name: `${r.first_name} ${r.last_name}`.trim(),
                         email: r.email,
                     });
                 } else {
-                    uauCount++;
+                    uauResidents.push(r);
                 }
             }
 
+            // Format CDU rows
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const formatted = (units ?? []).map((u: any) => ({
-                id: u.id,
-                internal_id: u.internal_id,
-                plot_number: u.plot_number,
-                address: [u.address_1, u.address_2].filter(Boolean).join(", "),
-                city: u.city,
-                county: u.county,
-                postcode: u.postcode,
-                region: u.region,
-                unit_type: u.unit_type,
-                lease_type: u.lease_type,
-                status: u.status,
-                purchase_date: u.purchase_date,
-                purchase_price: u.purchase_price != null ? Number(u.purchase_price) : null,
-                percentage_sold: u.percentage_sold != null ? Number(u.percentage_sold) : null,
-                monthly_rent: u.monthly_rent != null ? Number(u.monthly_rent) : null,
-                service_charge: u.service_charge != null ? Number(u.service_charge) : null,
-                specified_rent: u.specified_rent != null ? Number(u.specified_rent) : null,
-                is_verified: u.is_verified,
-                created_at: u.created_at,
-                updated_at: u.updated_at,
-                development_id: u.development?.id ?? null,
-                development_name: u.development?.name ?? null,
-                housing_provider: u.development?.housing_provider ?? null,
-                is_shared_ownership: u.development?.is_shared_ownership ?? false,
-                valuation_amount: u.valuation?.valuation_amount != null
-                    ? Number(u.valuation.valuation_amount)
-                    : null,
-                valuation_date: u.valuation?.valuation_date ?? null,
-                resident: residentsByUnitId.get(u.id) ?? null,
+            const cduFormatted = (cduRows.data ?? []).map((u: any) => {
+                const dev = devMap.get(u.development_id);
+                return {
+                    key: `cdu-${u.id}`,
+                    db_id: u.id,
+                    kind: "CDU",
+                    internal_id: u.internal_id,
+                    plot_number: u.plot_number,
+                    address: [u.address_1, u.address_2].filter(Boolean).join(", ") || null,
+                    city: u.city,
+                    county: u.county,
+                    postcode: u.postcode,
+                    region: u.region,
+                    unit_type: u.unit_type,
+                    lease_type: u.lease_type,
+                    status: u.status,
+                    purchase_date: u.purchase_date,
+                    purchase_price: u.purchase_price != null ? Number(u.purchase_price) : null,
+                    percentage_sold: u.percentage_sold != null ? Number(u.percentage_sold) : null,
+                    monthly_rent: u.monthly_rent != null ? Number(u.monthly_rent) : null,
+                    service_charge: u.service_charge != null ? Number(u.service_charge) : null,
+                    specified_rent: u.specified_rent != null ? Number(u.specified_rent) : null,
+                    is_verified: u.is_verified,
+                    created_at: u.created_at,
+                    updated_at: u.updated_at,
+                    development_id: u.development_id,
+                    development_name: dev?.name ?? null,
+                    housing_provider: dev?.housing_provider ?? null,
+                    is_shared_ownership: dev?.is_shared_ownership ?? false,
+                    valuation_amount: u.valuation?.valuation_amount != null
+                        ? Number(u.valuation.valuation_amount)
+                        : null,
+                    valuation_date: u.valuation?.valuation_date ?? null,
+                    resident: resByUnitId.get(u.id) ?? null,
+                };
+            });
+
+            // Format UAU rows (residents who self-selected a unit via postcode search)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const uauFormatted = uauResidents.map((r: any) => ({
+                key: `uau-${r.id}`,
+                db_id: null,
+                kind: "UAU",
+                internal_id: null,
+                plot_number: null,
+                address: r.address ?? null,
+                city: r.city ?? null,
+                county: r.county ?? null,
+                postcode: r.postcode ?? null,
+                region: null,
+                unit_type: r.unit_type ?? null,
+                lease_type: null,
+                status: "occupied",
+                purchase_date: r.purchase_date ?? null,
+                purchase_price: r.purchase_price != null ? Number(r.purchase_price) : null,
+                percentage_sold: r.percentage_sold != null ? Number(r.percentage_sold) : null,
+                monthly_rent: r.monthly_rent != null ? Number(r.monthly_rent) : null,
+                service_charge: r.service_charge != null ? Number(r.service_charge) : null,
+                specified_rent: null,
+                is_verified: false,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+                development_id: null,
+                development_name: null,
+                housing_provider: null,
+                is_shared_ownership: false,
+                valuation_amount: null,
+                valuation_date: null,
+                resident: {
+                    id: r.id,
+                    name: `${r.first_name} ${r.last_name}`.trim(),
+                    email: r.email,
+                },
             }));
 
             return NextResponse.json({
-                data: formatted,
-                meta: { cdu_count: cduCount, uau_count: uauCount },
+                data: [...cduFormatted, ...uauFormatted],
+                meta: {
+                    cdu_count: resByUnitId.size,
+                    uau_count: uauResidents.length,
+                },
+            });
+        }
+
+        // ----------------------------------------------------------------
+        // CASE 9b: Developments
+        // ----------------------------------------------------------------
+        if (resource === "developments") {
+            const targetCompanyId =
+                hasBossmanAccess && selectedCompanyId
+                    ? Number(selectedCompanyId)
+                    : userCompanyId;
+
+            const { data: devs, error: devErr } = await supabase
+                .from("company_development")
+                .select(
+                    "id, name, address, postcode, city, is_shared_ownership, is_help_to_buy, housing_provider, completion_date, management_company, created_at"
+                )
+                .eq("company_id", targetCompanyId)
+                .order("name");
+            if (devErr) throw devErr;
+
+            const devIds = (devs ?? []).map((d) => d.id as number);
+
+            // Unit counts + status breakdown per development
+            const { data: unitRows } = devIds.length
+                ? await supabase
+                    .from("company_development_units")
+                    .select("development_id, status")
+                    .in("development_id", devIds)
+                : { data: [] };
+
+            const totalMap = new Map<number, number>();
+            const occupiedMap = new Map<number, number>();
+            for (const u of unitRows ?? []) {
+                totalMap.set(u.development_id, (totalMap.get(u.development_id) ?? 0) + 1);
+                if (u.status === "occupied") {
+                    occupiedMap.set(u.development_id, (occupiedMap.get(u.development_id) ?? 0) + 1);
+                }
+            }
+
+            return NextResponse.json({
+                data: (devs ?? []).map((d) => ({
+                    id: d.id,
+                    name: d.name,
+                    address: d.address,
+                    postcode: d.postcode,
+                    city: d.city,
+                    is_shared_ownership: d.is_shared_ownership,
+                    is_help_to_buy: d.is_help_to_buy,
+                    housing_provider: d.housing_provider,
+                    management_company: d.management_company,
+                    completion_date: d.completion_date,
+                    created_at: d.created_at,
+                    total_units: totalMap.get(d.id) ?? 0,
+                    occupied_units: occupiedMap.get(d.id) ?? 0,
+                })),
             });
         }
 
