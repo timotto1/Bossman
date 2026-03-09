@@ -17,8 +17,14 @@ import {
     BarChart,
     Bar,
     Cell,
+    ComposedChart,
+    Line,
+    PieChart,
+    Pie,
     XAxis,
+    YAxis,
     ReferenceLine,
+    Tooltip,
     ResponsiveContainer,
 } from "recharts";
 import { OlympusTable, OlympusColumnDef } from "@/components/ui/olympus-table";
@@ -42,8 +48,14 @@ type PlatformUser = {
 type Company = { id: string; name: string };
 type Role = { id: string; name: string };
 
-type BarDatum = { key: string; value: number; color?: string };
-type MetricBullet = { label: string; color: string };
+type ChartFilter =
+    | { type: "signup_date"; date: string; label: string }
+    | { type: "signin_date"; date: string; label: string }
+    | { type: "status"; value: string; label: string }
+    | { type: "role"; value: string; label: string }
+    | null;
+
+type DateRange = 7 | 30 | 90 | "all";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -70,23 +82,42 @@ function fmtAxisDate(isoDate: string): string {
     return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
 }
 
+function computeAllDays(users: PlatformUser[]): number {
+    if (!users.length) return 30;
+    const ts = users.map((u) => new Date(u.created_at).getTime()).filter((t) => !isNaN(t));
+    if (!ts.length) return 30;
+    return Math.max(1, Math.min(Math.ceil((Date.now() - Math.min(...ts)) / 86400000) + 1, 365));
+}
+
 function getDailyBuckets(
     users: PlatformUser[],
     field: "created_at" | "last_sign_in_at",
     days: number
-): BarDatum[] {
-    const buckets: BarDatum[] = [];
-    for (let i = days - 1; i >= 0; i--) {
+): { key: string; value: number }[] {
+    return Array.from({ length: days }, (_, i) => {
         const d = new Date();
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split("T")[0];
-        const count = users.filter((u) => {
-            const val = field === "created_at" ? u.created_at : u.last_sign_in_at;
-            return val?.startsWith(dateStr);
+        d.setDate(d.getDate() - (days - 1 - i));
+        const key = d.toISOString().split("T")[0];
+        const value = users.filter((u) => {
+            const v = field === "created_at" ? u.created_at : u.last_sign_in_at;
+            return v?.startsWith(key);
         }).length;
-        buckets.push({ key: dateStr, value: count });
-    }
-    return buckets;
+        return { key, value };
+    });
+}
+
+function getSigninBuckets(
+    users: PlatformUser[],
+    days: number
+): { key: string; signins: number; rate: number }[] {
+    const total = users.length || 1;
+    return Array.from({ length: days }, (_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (days - 1 - i));
+        const key = d.toISOString().split("T")[0];
+        const signins = users.filter((u) => u.last_sign_in_at?.startsWith(key)).length;
+        return { key, signins, rate: Math.round((signins / total) * 100) };
+    });
 }
 
 const HA_COLORS = [
@@ -117,7 +148,45 @@ function getRoleColor(role: string) {
 
 const CHART_PALETTE = ["#7B3FE4", "#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"];
 
-// ─── Chart sub-components ─────────────────────────────────────────────────────
+// ─── Shared chart primitives ──────────────────────────────────────────────────
+
+const CARD_CN =
+    "rounded-2xl border border-gray-100 dark:border-white/[0.08] bg-white dark:bg-[#1A0F35] px-5 pt-4 pb-2 " +
+    "transition-all duration-200 " +
+    "hover:border-gray-200 dark:hover:border-white/[0.14] " +
+    "hover:shadow-[0_4px_16px_-4px_rgba(0,0,0,0.08)] dark:hover:shadow-[0_4px_24px_-4px_rgba(0,0,0,0.4)]";
+
+function RangeButton({
+    label,
+    active,
+    onClick,
+}: {
+    label: string;
+    active: boolean;
+    onClick: () => void;
+}) {
+    return (
+        <button
+            onClick={onClick}
+            className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                active
+                    ? "bg-[#7B3FE4] text-white"
+                    : "text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+            }`}
+        >
+            {label}
+        </button>
+    );
+}
+
+function LegendBullet({ color, label }: { color: string; label: string }) {
+    return (
+        <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-[3px] flex-shrink-0" style={{ background: color }} />
+            <span className="text-xs text-gray-500 dark:text-gray-400">{label}</span>
+        </div>
+    );
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function ChartDateTick({ x, y, payload, first, last }: any) {
@@ -125,12 +194,7 @@ function ChartDateTick({ x, y, payload, first, last }: any) {
     const isFirst = payload.value === first;
     return (
         <g transform={`translate(${x},${y})`}>
-            <text
-                x={0} y={0} dy={11}
-                fill="#9CA3AF"
-                fontSize={10}
-                textAnchor={isFirst ? "start" : "end"}
-            >
+            <text x={0} y={0} dy={11} fill="#9CA3AF" fontSize={10} textAnchor={isFirst ? "start" : "end"}>
                 {fmtAxisDate(payload.value)}
             </text>
         </g>
@@ -147,68 +211,118 @@ function MaxLabel({ viewBox, value }: any) {
     );
 }
 
-// ─── MetricBarCard ────────────────────────────────────────────────────────────
+// ─── Custom tooltips ──────────────────────────────────────────────────────────
 
-function MetricBarCard({
-    title,
-    metrics,
-    data,
-    isTimeSeries = true,
-    defaultBarColor = "#7B3FE4",
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function SignupsTooltip({ active, payload, label }: any) {
+    if (!active || !payload?.length) return null;
+    return (
+        <div className="bg-gray-900 dark:bg-[#0E0823] border border-white/10 rounded-xl px-3 py-2 shadow-xl pointer-events-none">
+            <p className="text-[10px] text-gray-400 mb-0.5">{fmtAxisDate(label)}</p>
+            <p className="text-sm font-semibold text-white">{payload[0].value} signups</p>
+        </div>
+    );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function SigninTooltip({ active, payload, label }: any) {
+    if (!active || !payload?.length) return null;
+    const signins = payload.find((p: { dataKey: string }) => p.dataKey === "signins")?.value ?? 0;
+    const rate = payload.find((p: { dataKey: string }) => p.dataKey === "rate")?.value ?? 0;
+    return (
+        <div className="bg-gray-900 dark:bg-[#0E0823] border border-white/10 rounded-xl px-3 py-2 shadow-xl pointer-events-none">
+            <p className="text-[10px] text-gray-400 mb-1">{fmtAxisDate(label)}</p>
+            <p className="text-sm font-semibold text-white">{signins} active</p>
+            <p className="text-xs text-gray-400 mt-0.5">{rate}% sign-in rate</p>
+        </div>
+    );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function DonutTooltip({ active, payload, total }: any) {
+    if (!active || !payload?.length) return null;
+    const { name, value } = payload[0].payload;
+    const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+    return (
+        <div className="bg-gray-900 dark:bg-[#0E0823] border border-white/10 rounded-xl px-3 py-2 shadow-xl pointer-events-none">
+            <p className="text-xs text-gray-400 mb-0.5">{name}</p>
+            <p className="text-sm font-semibold text-white">{value} <span className="text-gray-400 text-xs font-normal">({pct}%)</span></p>
+        </div>
+    );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function HBarTooltip({ active, payload, total }: any) {
+    if (!active || !payload?.length) return null;
+    const { key, value } = payload[0].payload;
+    const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+    return (
+        <div className="bg-gray-900 dark:bg-[#0E0823] border border-white/10 rounded-xl px-3 py-2 shadow-xl pointer-events-none">
+            <p className="text-xs text-gray-400 mb-0.5">{key}</p>
+            <p className="text-sm font-semibold text-white">{value} <span className="text-gray-400 text-xs font-normal">({pct}%)</span></p>
+        </div>
+    );
+}
+
+// ─── Card: New Signups (bar chart) ────────────────────────────────────────────
+
+function SignupsCard({
+    users,
+    filter,
+    onFilter,
 }: {
-    title: string;
-    metrics: MetricBullet[];
-    data: BarDatum[];
-    isTimeSeries?: boolean;
-    defaultBarColor?: string;
+    users: PlatformUser[];
+    filter: ChartFilter;
+    onFilter: (f: ChartFilter) => void;
 }) {
+    const [range, setRange] = useState<DateRange>(30);
+
+    const days = range === "all" ? computeAllDays(users) : range;
+    const data = useMemo(() => getDailyBuckets(users, "created_at", days), [users, days]);
+
     const maxValue = Math.max(...data.map((d) => d.value), 1);
     const first = data[0]?.key ?? "";
     const last = data[data.length - 1]?.key ?? "";
+    const totalInRange = data.reduce((sum, d) => sum + d.value, 0);
+    const activeDate = filter?.type === "signup_date" ? filter.date : null;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function handleBarClick(entry: any) {
+        const date = entry?.activeLabel ?? entry?.key;
+        if (!date) return;
+        if (activeDate === date) { onFilter(null); return; }
+        onFilter({ type: "signup_date", date, label: `Signed up ${fmtAxisDate(date)}` });
+    }
 
     return (
-        <div className="rounded-2xl border border-gray-100 dark:border-white/[0.08] bg-white dark:bg-[#1A0F35] px-5 pt-4 pb-2
-            transition-all duration-200
-            hover:border-gray-200 dark:hover:border-white/[0.14]
-            hover:shadow-[0_4px_16px_-4px_rgba(0,0,0,0.08)] dark:hover:shadow-[0_4px_24px_-4px_rgba(0,0,0,0.4)]">
-            {/* Title row */}
+        <div className={CARD_CN}>
             <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-semibold text-gray-900 dark:text-white">{title}</span>
-                <ChevronRightIcon className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 flex-shrink-0" />
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">New Signups</span>
+                <div className="flex items-center gap-0.5">
+                    {(([7, 30, 90, "all"] as const)).map((r) => (
+                        <RangeButton key={String(r)} label={r === "all" ? "All" : `${r}d`} active={range === r} onClick={() => setRange(r)} />
+                    ))}
+                </div>
             </div>
-
-            {/* Metrics legend */}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
-                {metrics.map((m, i) => (
-                    <div key={i} className="flex items-center gap-1.5">
-                        <span
-                            className="w-2.5 h-2.5 rounded-[3px] flex-shrink-0"
-                            style={{ background: m.color }}
-                        />
-                        <span className="text-xs text-gray-500 dark:text-gray-400">{m.label}</span>
-                    </div>
-                ))}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
+                <LegendBullet color="#7B3FE4" label={`${totalInRange} signups`} />
+                <LegendBullet color="#D1D5DB" label={range === "all" ? "all time" : `last ${range}d`} />
             </div>
-
-            {/* Bar chart */}
-            <div className="h-[90px] w-full">
+            <div className="h-[90px] w-full cursor-pointer" onClick={handleBarClick as React.MouseEventHandler}>
                 <ResponsiveContainer width="100%" height="100%">
                     <BarChart
                         data={data}
                         barCategoryGap="30%"
                         margin={{ top: 14, right: 2, left: 2, bottom: 0 }}
+                        onClick={handleBarClick}
                     >
                         <XAxis
                             dataKey="key"
                             axisLine={false}
                             tickLine={false}
                             interval={0}
-                            tick={
-                                isTimeSeries
-                                    ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                                    ((props: any) => <ChartDateTick {...props} first={first} last={last} />) as any
-                                    : { fill: "#9CA3AF", fontSize: 10 }
-                            }
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            tick={((props: any) => <ChartDateTick {...props} first={first} last={last} />) as any}
                         />
                         <ReferenceLine
                             y={maxValue}
@@ -217,17 +331,310 @@ function MetricBarCard({
                             strokeWidth={1}
                             label={<MaxLabel value={maxValue} />}
                         />
+                        <Tooltip content={<SignupsTooltip />} cursor={{ fill: "rgba(123,63,228,0.06)" }} />
                         <Bar dataKey="value" radius={[3, 3, 0, 0]}>
                             {data.map((d, i) => (
                                 <Cell
                                     key={i}
-                                    fill={d.color ?? defaultBarColor}
-                                    fillOpacity={0.88}
+                                    fill="#7B3FE4"
+                                    fillOpacity={activeDate === null || activeDate === d.key ? 0.88 : 0.2}
                                 />
                             ))}
                         </Bar>
                     </BarChart>
                 </ResponsiveContainer>
+            </div>
+        </div>
+    );
+}
+
+// ─── Card: Sign In Activity (line chart) ─────────────────────────────────────
+
+function SignInCard({
+    users,
+    filter,
+    onFilter,
+}: {
+    users: PlatformUser[];
+    filter: ChartFilter;
+    onFilter: (f: ChartFilter) => void;
+}) {
+    const [range, setRange] = useState<DateRange>(30);
+
+    const days = range === "all" ? computeAllDays(users) : range;
+    const data = useMemo(() => getSigninBuckets(users, days), [users, days]);
+
+    const maxSignins = Math.max(...data.map((d) => d.signins), 1);
+    const first = data[0]?.key ?? "";
+    const last = data[data.length - 1]?.key ?? "";
+    const totalActive = data.reduce((sum, d) => sum + d.signins, 0);
+    const avgRate = users.length > 0 ? Math.round((totalActive / days / users.length) * 100) : 0;
+    const activeDate = filter?.type === "signin_date" ? filter.date : null;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function handleClick(state: any) {
+        const date = state?.activeLabel;
+        if (!date) return;
+        if (activeDate === date) { onFilter(null); return; }
+        onFilter({ type: "signin_date", date, label: `Signed in ${fmtAxisDate(date)}` });
+    }
+
+    return (
+        <div className={CARD_CN}>
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">Sign In Activity</span>
+                <div className="flex items-center gap-0.5">
+                    {(([7, 30, 90, "all"] as const)).map((r) => (
+                        <RangeButton key={String(r)} label={r === "all" ? "All" : `${r}d`} active={range === r} onClick={() => setRange(r)} />
+                    ))}
+                </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
+                <LegendBullet color="#7B3FE4" label={`${totalActive} sign-ins`} />
+                <LegendBullet color="#9CA3AF" label={`${avgRate}% avg rate`} />
+            </div>
+            <div className="h-[90px] w-full cursor-pointer">
+                <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart
+                        data={data}
+                        margin={{ top: 14, right: 2, left: 2, bottom: 0 }}
+                        onClick={handleClick}
+                    >
+                        <XAxis
+                            dataKey="key"
+                            axisLine={false}
+                            tickLine={false}
+                            interval={0}
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            tick={((props: any) => <ChartDateTick {...props} first={first} last={last} />) as any}
+                        />
+                        <YAxis yAxisId="left" domain={[0, maxSignins + 1]} hide />
+                        <YAxis yAxisId="right" orientation="right" domain={[0, 100]} hide />
+                        {activeDate && (
+                            <ReferenceLine
+                                yAxisId="left"
+                                x={activeDate}
+                                stroke="#7B3FE4"
+                                strokeDasharray="3 2"
+                                strokeWidth={1.5}
+                            />
+                        )}
+                        <Tooltip content={<SigninTooltip />} cursor={{ stroke: "rgba(123,63,228,0.15)", strokeWidth: 1 }} />
+                        <Line
+                            yAxisId="left"
+                            dataKey="signins"
+                            stroke="#7B3FE4"
+                            strokeWidth={2}
+                            dot={false}
+                            activeDot={{ r: 3, fill: "#7B3FE4", strokeWidth: 0 }}
+                            isAnimationActive
+                            animationDuration={400}
+                        />
+                        <Line
+                            yAxisId="right"
+                            dataKey="rate"
+                            stroke="#9CA3AF"
+                            strokeWidth={1.5}
+                            strokeDasharray="3 2"
+                            dot={false}
+                            activeDot={{ r: 2, fill: "#9CA3AF", strokeWidth: 0 }}
+                            isAnimationActive
+                            animationDuration={400}
+                        />
+                    </ComposedChart>
+                </ResponsiveContainer>
+            </div>
+        </div>
+    );
+}
+
+// ─── Card: Account Status (donut) ─────────────────────────────────────────────
+
+function StatusCard({
+    confirmed,
+    pending,
+    filter,
+    onFilter,
+}: {
+    confirmed: number;
+    pending: number;
+    filter: ChartFilter;
+    onFilter: (f: ChartFilter) => void;
+}) {
+    const total = confirmed + pending;
+    const data = useMemo(() => [
+        { name: "Confirmed", value: confirmed, color: "#10B981" },
+        { name: "Pending", value: pending, color: "#F59E0B" },
+    ], [confirmed, pending]);
+
+    const activeStatus = filter?.type === "status" ? filter.value : null;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function handleClick(entry: any) {
+        const name: string = entry?.name ?? entry?.payload?.name;
+        if (!name) return;
+        if (activeStatus === name) { onFilter(null); return; }
+        onFilter({ type: "status", value: name, label: `Status: ${name}` });
+    }
+
+    return (
+        <div className={CARD_CN}>
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">Account Status</span>
+                <ChevronRightIcon className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600" />
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
+                <LegendBullet color="#10B981" label={`${confirmed} confirmed`} />
+                <LegendBullet color="#F59E0B" label={`${pending} pending`} />
+            </div>
+            <div className="relative h-[90px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                        <Pie
+                            data={data}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={26}
+                            outerRadius={40}
+                            dataKey="value"
+                            strokeWidth={0}
+                            paddingAngle={data.every((d) => d.value > 0) ? 2 : 0}
+                            onClick={handleClick}
+                            style={{ cursor: "pointer" }}
+                            isAnimationActive
+                            animationDuration={400}
+                        >
+                            {data.map((d, i) => (
+                                <Cell
+                                    key={i}
+                                    fill={d.color}
+                                    fillOpacity={activeStatus === null || activeStatus === d.name ? 0.9 : 0.2}
+                                />
+                            ))}
+                        </Pie>
+                        <Tooltip content={<DonutTooltip total={total} />} />
+                    </PieChart>
+                </ResponsiveContainer>
+                {/* Center label */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <p className="text-lg font-bold text-gray-900 dark:text-white leading-none">{total}</p>
+                    <p className="text-[9px] text-gray-400 dark:text-gray-600 mt-0.5">total</p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Card: Role Breakdown (donut ≤5 roles, horizontal bar >5) ────────────────
+
+type RoleDatum = { key: string; value: number; color: string };
+
+function RoleCard({
+    roleBuckets,
+    filter,
+    onFilter,
+}: {
+    roleBuckets: RoleDatum[];
+    filter: ChartFilter;
+    onFilter: (f: ChartFilter) => void;
+}) {
+    const total = roleBuckets.reduce((s, d) => s + d.value, 0);
+    const useHBar = roleBuckets.length > 5;
+    const activeRole = filter?.type === "role" ? filter.value : null;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function handleDonutClick(entry: any) {
+        const name: string = entry?.name ?? entry?.payload?.name;
+        if (!name) return;
+        if (activeRole === name) { onFilter(null); return; }
+        onFilter({ type: "role", value: name, label: `Role: ${name}` });
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function handleBarClick(entry: any) {
+        const key: string = entry?.activePayload?.[0]?.payload?.key ?? entry?.key;
+        if (!key) return;
+        if (activeRole === key) { onFilter(null); return; }
+        onFilter({ type: "role", value: key, label: `Role: ${key}` });
+    }
+
+    const donutData = roleBuckets.map((r) => ({ ...r, name: r.key }));
+
+    return (
+        <div className={CARD_CN}>
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">Role Breakdown</span>
+                <ChevronRightIcon className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600" />
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2">
+                {roleBuckets.slice(0, 3).map((r, i) => (
+                    <LegendBullet key={r.key} color={CHART_PALETTE[i % CHART_PALETTE.length]} label={`${r.value} ${r.key}`} />
+                ))}
+            </div>
+            <div className="relative h-[90px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                    {useHBar ? (
+                        <BarChart
+                            layout="vertical"
+                            data={roleBuckets}
+                            margin={{ top: 2, right: 6, left: 4, bottom: 2 }}
+                            onClick={handleBarClick}
+                        >
+                            <XAxis type="number" hide />
+                            <YAxis
+                                type="category"
+                                dataKey="key"
+                                axisLine={false}
+                                tickLine={false}
+                                tick={{ fill: "#9CA3AF", fontSize: 10 }}
+                                width={52}
+                            />
+                            <Tooltip content={<HBarTooltip total={total} />} cursor={{ fill: "rgba(123,63,228,0.06)" }} />
+                            <Bar dataKey="value" radius={[0, 3, 3, 0]} style={{ cursor: "pointer" }}>
+                                {roleBuckets.map((d, i) => (
+                                    <Cell
+                                        key={i}
+                                        fill={CHART_PALETTE[i % CHART_PALETTE.length]}
+                                        fillOpacity={activeRole === null || activeRole === d.key ? 0.88 : 0.2}
+                                    />
+                                ))}
+                            </Bar>
+                        </BarChart>
+                    ) : (
+                        <PieChart>
+                            <Pie
+                                data={donutData}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={26}
+                                outerRadius={40}
+                                dataKey="value"
+                                strokeWidth={0}
+                                paddingAngle={donutData.every((d) => d.value > 0) ? 2 : 0}
+                                onClick={handleDonutClick}
+                                style={{ cursor: "pointer" }}
+                                isAnimationActive
+                                animationDuration={400}
+                            >
+                                {donutData.map((d, i) => (
+                                    <Cell
+                                        key={i}
+                                        fill={CHART_PALETTE[i % CHART_PALETTE.length]}
+                                        fillOpacity={activeRole === null || activeRole === d.name ? 0.9 : 0.2}
+                                    />
+                                ))}
+                            </Pie>
+                            <Tooltip content={<DonutTooltip total={total} />} />
+                        </PieChart>
+                    )}
+                </ResponsiveContainer>
+                {/* Center label for donut */}
+                {!useHBar && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                        <p className="text-lg font-bold text-gray-900 dark:text-white leading-none">{total}</p>
+                        <p className="text-[9px] text-gray-400 dark:text-gray-600 mt-0.5">users</p>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -563,6 +970,7 @@ export default function UsersPage() {
     const [roles, setRoles] = useState<Role[]>([]);
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
+    const [chartFilter, setChartFilter] = useState<ChartFilter>(null);
 
     const fetchUsers = useCallback(() => {
         setLoading(true);
@@ -588,24 +996,10 @@ export default function UsersPage() {
     // ── Derived stats ────────────────────────────────────────────────────────
 
     const totalUsers = users.length;
-    const now = Date.now();
-    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-    const activeThisMonth = users.filter(
-        (u) => u.last_sign_in_at && now - new Date(u.last_sign_in_at).getTime() < thirtyDaysMs
-    ).length;
     const pendingInvites = users.filter((u) => !u.confirmed).length;
     const confirmedCount = totalUsers - pendingInvites;
-    const activePercent = totalUsers > 0 ? Math.round((activeThisMonth / totalUsers) * 100) : 0;
 
-    const signupBuckets = useMemo(() => getDailyBuckets(users, "created_at", 14), [users]);
-    const signInBuckets = useMemo(() => getDailyBuckets(users, "last_sign_in_at", 14), [users]);
-
-    const statusData = useMemo<BarDatum[]>(() => [
-        { key: "Confirmed", value: confirmedCount, color: "#10B981" },
-        { key: "Pending", value: pendingInvites, color: "#F59E0B" },
-    ], [confirmedCount, pendingInvites]);
-
-    const roleBuckets = useMemo<BarDatum[]>(() => {
+    const roleBuckets = useMemo<RoleDatum[]>(() => {
         const counts: Record<string, number> = {};
         users.forEach((u) => {
             if (u.roles.length === 0) {
@@ -618,6 +1012,25 @@ export default function UsersPage() {
             .sort((a, b) => b[1] - a[1])
             .map(([key, value], i) => ({ key, value, color: CHART_PALETTE[i % CHART_PALETTE.length] }));
     }, [users]);
+
+    // ── Chart filter → table data ────────────────────────────────────────────
+
+    const filteredUsers = useMemo<PlatformUser[]>(() => {
+        if (!chartFilter) return users;
+        switch (chartFilter.type) {
+            case "signup_date":
+                return users.filter((u) => u.created_at.startsWith(chartFilter.date));
+            case "signin_date":
+                return users.filter((u) => u.last_sign_in_at?.startsWith(chartFilter.date));
+            case "status":
+                return users.filter((u) => u.status === chartFilter.value);
+            case "role":
+                if (chartFilter.value === "No role") return users.filter((u) => u.roles.length === 0);
+                return users.filter((u) => u.roles.includes(chartFilter.value));
+            default:
+                return users;
+        }
+    }, [users, chartFilter]);
 
     // ── Dynamic column filter options ────────────────────────────────────────
 
@@ -655,52 +1068,36 @@ export default function UsersPage() {
             </div>
 
             {/* Metric cards */}
-            <div className="px-6 pb-5 grid grid-cols-2 lg:grid-cols-4 gap-4 flex-shrink-0">
-                <MetricBarCard
-                    title="New Signups"
-                    metrics={[
-                        { label: `${totalUsers} total users`, color: "#7B3FE4" },
-                        { label: "last 14 days", color: "#D1D5DB" },
-                    ]}
-                    data={signupBuckets}
-                    isTimeSeries
-                />
-
-                <MetricBarCard
-                    title="Sign In Activity"
-                    metrics={[
-                        { label: `${activeThisMonth} active`, color: "#7B3FE4" },
-                        { label: `${activePercent}% rate`, color: "#D1D5DB" },
-                    ]}
-                    data={signInBuckets}
-                    isTimeSeries
-                />
-
-                <MetricBarCard
-                    title="Account Status"
-                    metrics={[
-                        { label: `${confirmedCount} confirmed`, color: "#10B981" },
-                        { label: `${pendingInvites} pending`, color: "#F59E0B" },
-                    ]}
-                    data={statusData}
-                    isTimeSeries={false}
-                />
-
-                <MetricBarCard
-                    title="Role Breakdown"
-                    metrics={roleBuckets.slice(0, 3).map((r, i) => ({
-                        label: `${r.value} ${r.key}`,
-                        color: CHART_PALETTE[i % CHART_PALETTE.length],
-                    }))}
-                    data={roleBuckets}
-                    isTimeSeries={false}
-                />
+            <div className="px-6 pb-4 grid grid-cols-2 lg:grid-cols-4 gap-4 flex-shrink-0">
+                <SignupsCard users={users} filter={chartFilter} onFilter={setChartFilter} />
+                <SignInCard users={users} filter={chartFilter} onFilter={setChartFilter} />
+                <StatusCard confirmed={confirmedCount} pending={pendingInvites} filter={chartFilter} onFilter={setChartFilter} />
+                <RoleCard roleBuckets={roleBuckets} filter={chartFilter} onFilter={setChartFilter} />
             </div>
+
+            {/* Active chart filter chip */}
+            {chartFilter && (
+                <div className="px-6 pb-2 flex items-center gap-2 flex-shrink-0">
+                    <span className="text-xs text-gray-400 dark:text-gray-500">Filtered by:</span>
+                    <span className={UI.filterChip}>
+                        {chartFilter.label}
+                    </span>
+                    <button
+                        onClick={() => setChartFilter(null)}
+                        className="text-xs text-purple-600 dark:text-purple-400 hover:underline"
+                    >
+                        Clear
+                    </button>
+                    <span className="text-xs text-gray-400 dark:text-gray-600 ml-1">
+                        {filteredUsers.length} of {totalUsers} users
+                    </span>
+                </div>
+            )}
 
             {/* Users table */}
             <OlympusTable<PlatformUser>
                 columns={columns}
-                data={users}
+                data={filteredUsers}
                 loading={loading}
                 rowKey={(u) => u.id}
                 searchKeys={["email", "name", "housing_association"]}
