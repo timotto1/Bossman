@@ -11,11 +11,16 @@ import {
     EnvelopeIcon,
     BuildingOffice2Icon,
     ExclamationCircleIcon,
-    UsersIcon,
-    ClockIcon,
-    UserCircleIcon,
+    ChevronRightIcon,
 } from "@heroicons/react/24/outline";
-import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
+import {
+    BarChart,
+    Bar,
+    Cell,
+    XAxis,
+    ReferenceLine,
+    ResponsiveContainer,
+} from "recharts";
 import { OlympusTable, OlympusColumnDef } from "@/components/ui/olympus-table";
 import { UI } from "@/lib/ui";
 
@@ -37,6 +42,9 @@ type PlatformUser = {
 type Company = { id: string; name: string };
 type Role = { id: string; name: string };
 
+type BarDatum = { key: string; value: number; color?: string };
+type MetricBullet = { label: string; color: string };
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmtRelative(iso: string | null): string {
@@ -55,6 +63,30 @@ function fmtRelative(iso: string | null): string {
 function fmtDate(iso: string | null): string {
     if (!iso) return "—";
     return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function fmtAxisDate(isoDate: string): string {
+    const d = new Date(isoDate + "T12:00:00");
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+}
+
+function getDailyBuckets(
+    users: PlatformUser[],
+    field: "created_at" | "last_sign_in_at",
+    days: number
+): BarDatum[] {
+    const buckets: BarDatum[] = [];
+    for (let i = days - 1; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().split("T")[0];
+        const count = users.filter((u) => {
+            const val = field === "created_at" ? u.created_at : u.last_sign_in_at;
+            return val?.startsWith(dateStr);
+        }).length;
+        buckets.push({ key: dateStr, value: count });
+    }
+    return buckets;
 }
 
 const HA_COLORS = [
@@ -84,6 +116,122 @@ function getRoleColor(role: string) {
 }
 
 const CHART_PALETTE = ["#7B3FE4", "#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"];
+
+// ─── Chart sub-components ─────────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ChartDateTick({ x, y, payload, first, last }: any) {
+    if (!payload || (payload.value !== first && payload.value !== last)) return null;
+    const isFirst = payload.value === first;
+    return (
+        <g transform={`translate(${x},${y})`}>
+            <text
+                x={0} y={0} dy={11}
+                fill="#9CA3AF"
+                fontSize={10}
+                textAnchor={isFirst ? "start" : "end"}
+            >
+                {fmtAxisDate(payload.value)}
+            </text>
+        </g>
+    );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function MaxLabel({ viewBox, value }: any) {
+    if (!viewBox || value === 0) return null;
+    return (
+        <text x={(viewBox.x ?? 0) + 3} y={(viewBox.y ?? 0) - 5} fill="#9CA3AF" fontSize={10}>
+            {value}
+        </text>
+    );
+}
+
+// ─── MetricBarCard ────────────────────────────────────────────────────────────
+
+function MetricBarCard({
+    title,
+    metrics,
+    data,
+    isTimeSeries = true,
+    defaultBarColor = "#7B3FE4",
+}: {
+    title: string;
+    metrics: MetricBullet[];
+    data: BarDatum[];
+    isTimeSeries?: boolean;
+    defaultBarColor?: string;
+}) {
+    const maxValue = Math.max(...data.map((d) => d.value), 1);
+    const first = data[0]?.key ?? "";
+    const last = data[data.length - 1]?.key ?? "";
+
+    return (
+        <div className="rounded-2xl border border-gray-100 dark:border-white/[0.08] bg-white dark:bg-[#1A0F35] px-5 pt-4 pb-2
+            transition-all duration-200
+            hover:border-gray-200 dark:hover:border-white/[0.14]
+            hover:shadow-[0_4px_16px_-4px_rgba(0,0,0,0.08)] dark:hover:shadow-[0_4px_24px_-4px_rgba(0,0,0,0.4)]">
+            {/* Title row */}
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">{title}</span>
+                <ChevronRightIcon className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 flex-shrink-0" />
+            </div>
+
+            {/* Metrics legend */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
+                {metrics.map((m, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                        <span
+                            className="w-2.5 h-2.5 rounded-[3px] flex-shrink-0"
+                            style={{ background: m.color }}
+                        />
+                        <span className="text-xs text-gray-500 dark:text-gray-400">{m.label}</span>
+                    </div>
+                ))}
+            </div>
+
+            {/* Bar chart */}
+            <div className="h-[90px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                        data={data}
+                        barCategoryGap="30%"
+                        margin={{ top: 14, right: 2, left: 2, bottom: 0 }}
+                    >
+                        <XAxis
+                            dataKey="key"
+                            axisLine={false}
+                            tickLine={false}
+                            interval={0}
+                            tick={
+                                isTimeSeries
+                                    ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                    ((props: any) => <ChartDateTick {...props} first={first} last={last} />) as any
+                                    : { fill: "#9CA3AF", fontSize: 10 }
+                            }
+                        />
+                        <ReferenceLine
+                            y={maxValue}
+                            stroke="#D1D5DB"
+                            strokeDasharray="4 3"
+                            strokeWidth={1}
+                            label={<MaxLabel value={maxValue} />}
+                        />
+                        <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                            {data.map((d, i) => (
+                                <Cell
+                                    key={i}
+                                    fill={d.color ?? defaultBarColor}
+                                    fillOpacity={0.88}
+                                />
+                            ))}
+                        </Bar>
+                    </BarChart>
+                </ResponsiveContainer>
+            </div>
+        </div>
+    );
+}
 
 // ─── Column definitions ───────────────────────────────────────────────────────
 
@@ -179,20 +327,6 @@ const COLUMNS: OlympusColumnDef<PlatformUser>[] = [
     },
 ];
 
-// ─── Stat Card ────────────────────────────────────────────────────────────────
-
-function StatCard({ label, children }: { label: string; children: React.ReactNode }) {
-    return (
-        <div className="rounded-2xl border border-gray-100 dark:border-white/[0.08] bg-white dark:bg-[#1A0F35] p-5
-            transition-all duration-200
-            hover:border-gray-200 dark:hover:border-white/[0.14]
-            hover:shadow-[0_4px_16px_-4px_rgba(0,0,0,0.08)] dark:hover:shadow-[0_4px_24px_-4px_rgba(0,0,0,0.4)]">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-2">{label}</p>
-            {children}
-        </div>
-    );
-}
-
 // ─── Invite Modal ─────────────────────────────────────────────────────────────
 
 function InviteModal({
@@ -268,7 +402,6 @@ function InviteModal({
                 className="relative bg-white dark:bg-[#160B30] rounded-2xl shadow-2xl w-full max-w-md border border-gray-100 dark:border-white/10 overflow-hidden"
                 onClick={(e) => e.stopPropagation()}
             >
-                {/* Header */}
                 <div className="flex items-start justify-between p-6 pb-0">
                     <div>
                         <h2 className="text-lg font-bold text-gray-900 dark:text-white">Invite User</h2>
@@ -287,7 +420,6 @@ function InviteModal({
                 <div className="p-6">
                     {!magicLink ? (
                         <div className="space-y-4">
-                            {/* Email */}
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">
                                     Email Address
@@ -305,7 +437,6 @@ function InviteModal({
                                 </div>
                             </div>
 
-                            {/* Housing Association */}
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">
                                     Housing Association
@@ -325,7 +456,6 @@ function InviteModal({
                                 </div>
                             </div>
 
-                            {/* Role */}
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">
                                     Role / Permissions
@@ -345,7 +475,6 @@ function InviteModal({
                                 </div>
                             </div>
 
-                            {/* Error */}
                             {error && (
                                 <div className="flex items-center gap-2 text-red-600 dark:text-red-400 text-sm bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-3">
                                     <ExclamationCircleIcon className="w-4 h-4 flex-shrink-0" />
@@ -353,7 +482,6 @@ function InviteModal({
                                 </div>
                             )}
 
-                            {/* Generate button */}
                             <button
                                 onClick={handleGenerate}
                                 disabled={loading}
@@ -369,7 +497,6 @@ function InviteModal({
                         </div>
                     ) : (
                         <div className="space-y-4">
-                            {/* Success banner */}
                             <div className="flex items-center gap-3 p-4 bg-green-50 dark:bg-green-900/20 rounded-xl border border-green-200 dark:border-green-800">
                                 <div className="w-8 h-8 rounded-full bg-green-100 dark:bg-green-900/40 flex items-center justify-center flex-shrink-0">
                                     <CheckIcon className="w-4 h-4 text-green-600 dark:text-green-400" />
@@ -380,7 +507,6 @@ function InviteModal({
                                 </div>
                             </div>
 
-                            {/* Magic link */}
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">
                                     Magic Link
@@ -395,7 +521,6 @@ function InviteModal({
                                 </p>
                             </div>
 
-                            {/* Copy + Download */}
                             <div className="flex gap-3">
                                 <button
                                     onClick={copyLink}
@@ -449,7 +574,6 @@ export default function UsersPage() {
     }, []);
 
     useEffect(() => {
-        // Fetch companies and roles once
         fetch("/api/internal/olympus")
             .then((r) => r.json())
             .then((j) => setCompanies(j.data ?? []))
@@ -458,36 +582,41 @@ export default function UsersPage() {
             .then((r) => r.json())
             .then((j) => setRoles(j.data ?? []))
             .catch(console.error);
-        // Fetch users
         fetchUsers();
     }, [fetchUsers]);
 
-    // ── Stats ────────────────────────────────────────────────────────────────
-
-    const now = Date.now();
-    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    // ── Derived stats ────────────────────────────────────────────────────────
 
     const totalUsers = users.length;
+    const now = Date.now();
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const activeThisMonth = users.filter(
         (u) => u.last_sign_in_at && now - new Date(u.last_sign_in_at).getTime() < thirtyDaysMs
     ).length;
     const pendingInvites = users.filter((u) => !u.confirmed).length;
+    const confirmedCount = totalUsers - pendingInvites;
     const activePercent = totalUsers > 0 ? Math.round((activeThisMonth / totalUsers) * 100) : 0;
 
-    const roleCounts = useMemo(() => {
+    const signupBuckets = useMemo(() => getDailyBuckets(users, "created_at", 14), [users]);
+    const signInBuckets = useMemo(() => getDailyBuckets(users, "last_sign_in_at", 14), [users]);
+
+    const statusData = useMemo<BarDatum[]>(() => [
+        { key: "Confirmed", value: confirmedCount, color: "#10B981" },
+        { key: "Pending", value: pendingInvites, color: "#F59E0B" },
+    ], [confirmedCount, pendingInvites]);
+
+    const roleBuckets = useMemo<BarDatum[]>(() => {
         const counts: Record<string, number> = {};
         users.forEach((u) => {
             if (u.roles.length === 0) {
                 counts["No role"] = (counts["No role"] ?? 0) + 1;
             } else {
-                u.roles.forEach((r) => {
-                    counts[r] = (counts[r] ?? 0) + 1;
-                });
+                u.roles.forEach((r) => { counts[r] = (counts[r] ?? 0) + 1; });
             }
         });
         return Object.entries(counts)
             .sort((a, b) => b[1] - a[1])
-            .map(([name, value]) => ({ name, value }));
+            .map(([key, value], i) => ({ key, value, color: CHART_PALETTE[i % CHART_PALETTE.length] }));
     }, [users]);
 
     // ── Dynamic column filter options ────────────────────────────────────────
@@ -502,8 +631,6 @@ export default function UsersPage() {
                 : col
         );
     }, [users]);
-
-    // ── Handlers ─────────────────────────────────────────────────────────────
 
     function handleModalDone() {
         setShowModal(false);
@@ -527,104 +654,47 @@ export default function UsersPage() {
                 </button>
             </div>
 
-            {/* Stats */}
+            {/* Metric cards */}
             <div className="px-6 pb-5 grid grid-cols-2 lg:grid-cols-4 gap-4 flex-shrink-0">
-                {/* Total Users */}
-                <StatCard label="Total Users">
-                    <div className="flex items-end gap-3 mt-1">
-                        <div className="w-9 h-9 rounded-xl bg-[#F4F0FE] dark:bg-purple-900/30 flex items-center justify-center flex-shrink-0">
-                            <UsersIcon className="w-5 h-5 text-[#7B3FE4] dark:text-purple-400" />
-                        </div>
-                        <div>
-                            <p className="text-3xl font-bold text-gray-900 dark:text-white leading-none">{totalUsers}</p>
-                            <p className="text-xs text-gray-400 dark:text-gray-600 mt-1">platform accounts</p>
-                        </div>
-                    </div>
-                </StatCard>
+                <MetricBarCard
+                    title="New Signups"
+                    metrics={[
+                        { label: `${totalUsers} total users`, color: "#7B3FE4" },
+                        { label: "last 14 days", color: "#D1D5DB" },
+                    ]}
+                    data={signupBuckets}
+                    isTimeSeries
+                />
 
-                {/* Active This Month */}
-                <StatCard label="Active This Month">
-                    <div className="mt-1">
-                        <div className="flex items-baseline gap-2">
-                            <p className="text-3xl font-bold text-gray-900 dark:text-white leading-none">{activeThisMonth}</p>
-                            <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${
-                                activePercent >= 50
-                                    ? "bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400"
-                                    : "bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400"
-                            }`}>
-                                {activePercent}%
-                            </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 mt-1.5">
-                            <ClockIcon className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
-                            <p className="text-xs text-gray-400 dark:text-gray-600">signed in last 30 days</p>
-                        </div>
-                    </div>
-                </StatCard>
+                <MetricBarCard
+                    title="Sign In Activity"
+                    metrics={[
+                        { label: `${activeThisMonth} active`, color: "#7B3FE4" },
+                        { label: `${activePercent}% rate`, color: "#D1D5DB" },
+                    ]}
+                    data={signInBuckets}
+                    isTimeSeries
+                />
 
-                {/* Pending Invites */}
-                <StatCard label="Pending Invites">
-                    <div className="flex items-end gap-3 mt-1">
-                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                            pendingInvites > 0
-                                ? "bg-amber-50 dark:bg-amber-900/20"
-                                : "bg-gray-50 dark:bg-white/5"
-                        }`}>
-                            <UserCircleIcon className={`w-5 h-5 ${
-                                pendingInvites > 0
-                                    ? "text-amber-500 dark:text-amber-400"
-                                    : "text-gray-400 dark:text-gray-600"
-                            }`} />
-                        </div>
-                        <div>
-                            <p className="text-3xl font-bold text-gray-900 dark:text-white leading-none">{pendingInvites}</p>
-                            <p className="text-xs text-gray-400 dark:text-gray-600 mt-1">awaiting confirmation</p>
-                        </div>
-                    </div>
-                </StatCard>
+                <MetricBarCard
+                    title="Account Status"
+                    metrics={[
+                        { label: `${confirmedCount} confirmed`, color: "#10B981" },
+                        { label: `${pendingInvites} pending`, color: "#F59E0B" },
+                    ]}
+                    data={statusData}
+                    isTimeSeries={false}
+                />
 
-                {/* Role Distribution */}
-                <StatCard label="Role Distribution">
-                    {loading || roleCounts.length === 0 ? (
-                        <p className="text-sm text-gray-400 dark:text-gray-600 mt-3">
-                            {loading ? "Loading…" : "No data"}
-                        </p>
-                    ) : (
-                        <div className="flex items-center gap-3 mt-1">
-                            <div className="relative flex-shrink-0" style={{ width: 68, height: 68 }}>
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <PieChart>
-                                        <Pie
-                                            data={roleCounts}
-                                            cx="50%"
-                                            cy="50%"
-                                            innerRadius={20}
-                                            outerRadius={32}
-                                            dataKey="value"
-                                            strokeWidth={0}
-                                        >
-                                            {roleCounts.map((_, i) => (
-                                                <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
-                                            ))}
-                                        </Pie>
-                                    </PieChart>
-                                </ResponsiveContainer>
-                            </div>
-                            <div className="flex flex-col gap-1 min-w-0 flex-1">
-                                {roleCounts.slice(0, 3).map((item, i) => (
-                                    <div key={item.name} className="flex items-center gap-1.5 min-w-0">
-                                        <span
-                                            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                                            style={{ background: CHART_PALETTE[i % CHART_PALETTE.length] }}
-                                        />
-                                        <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{item.name}</span>
-                                        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300 ml-auto pl-1">{item.value}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                </StatCard>
+                <MetricBarCard
+                    title="Role Breakdown"
+                    metrics={roleBuckets.slice(0, 3).map((r, i) => ({
+                        label: `${r.value} ${r.key}`,
+                        color: CHART_PALETTE[i % CHART_PALETTE.length],
+                    }))}
+                    data={roleBuckets}
+                    isTimeSeries={false}
+                />
             </div>
 
             {/* Users table */}
