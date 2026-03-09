@@ -1,0 +1,28 @@
+{
+  "extends": ["next/core-web-vitals", "next/typescript"],
+  "plugins": ["simple-import-sort"],
+  "rules": {
+    "simple-import-sort/imports": "error",
+    "simple-import-sort/exports": "error",
+    "react/no-unescaped-entities": "off",
+    "@typescript-eslint/no-empty-object-type": "off"
+  },
+  "overrides": [
+    {
+      "files": ["*.ts", "*.tsx"],
+      "rules": {
+        "simple-import-sort/imports": [
+          "error",
+          {
+            "groups": [
+              // Packages `react` related packages come first.
+              ["^react", "^@?\\w"],
+              // Side effect imports.
+              ["^\\u0000"]
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
